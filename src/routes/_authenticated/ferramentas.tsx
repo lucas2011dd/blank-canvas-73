@@ -119,14 +119,16 @@ function download(text: string, name: string, mime: string) {
 
 function parseVCF(text: string): ImportRow[] {
   const cards = text.split(/END:VCARD/i);
-  return cards.map((card) => {
+  const out: ImportRow[] = [];
+  for (const card of cards) {
     const name = /FN:(.+)/i.exec(card)?.[1]?.trim();
-    if (!name) return null;
-    return {
+    if (!name) continue;
+    out.push({
       name,
       phone: /TEL[^:]*:(.+)/i.exec(card)?.[1]?.trim(),
       email: /EMAIL[^:]*:(.+)/i.exec(card)?.[1]?.trim(),
       company: /ORG:(.+)/i.exec(card)?.[1]?.trim(),
-    };
-  }).filter((c): c is ImportRow => !!c);
+    });
+  }
+  return out;
 }
