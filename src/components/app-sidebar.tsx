@@ -1,4 +1,5 @@
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Cable,
@@ -9,6 +10,7 @@ import {
   ScrollText,
   Sparkles,
   LogOut,
+  ShieldCheck,
 } from "lucide-react";
 import {
   Sidebar,
@@ -24,8 +26,8 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { supabase } from "@/integrations/supabase/client";
-import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 
 const main = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
@@ -38,16 +40,37 @@ const system = [
   { title: "Configurações", url: "/configuracoes", icon: Settings },
   { title: "Logs & Auditoria", url: "/logs", icon: ScrollText },
 ];
+const adminItems = [
+  { title: "Usuários", url: "/usuarios", icon: ShieldCheck },
+];
 
 export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
+  const qc = useQueryClient();
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data: userRes } = await supabase.auth.getUser();
+      if (!userRes.user) return;
+      const { data } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userRes.user.id);
+      if (!cancelled) setIsAdmin(!!(data ?? []).find((r: any) => r.role === "admin"));
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const isActive = (url: string) => pathname === url || pathname.startsWith(url + "/");
 
   async function signOut() {
+    await qc.cancelQueries();
+    qc.clear();
     await supabase.auth.signOut();
     toast.success("Sessão encerrada");
     navigate({ to: "/auth", replace: true });
@@ -103,6 +126,25 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        {isAdmin && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Administração</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {adminItems.map((item) => (
+                  <SidebarMenuItem key={item.url}>
+                    <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
+                      <Link to={item.url}>
+                        <item.icon />
+                        <span>{item.title}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
       <SidebarFooter className="border-t">
         <SidebarMenu>
