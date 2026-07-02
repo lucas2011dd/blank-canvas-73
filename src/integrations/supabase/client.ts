@@ -1,15 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 
+// Chaves públicas (anon) — seguras no browser porque a proteção real é RLS.
+const url = "https://faivazixuzbtgixqnnuk.supabase.co";
+const anonKey =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhaXZheml4dXpidGdpeHFubnVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMwMDk0NDAsImV4cCI6MjA5ODU4NTQ0MH0.NVHh28my_Cpqu4KdsEYB5BLu5QAY8hLlOH2GGPY_Afw";
 
-const url = import.meta.env.VITE_SUPABASE_URL;
-const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-if (!url || !anonKey) {
-  // eslint-disable-next-line no-console
-  console.warn("[supabase] VITE_SUPABASE_URL/VITE_SUPABASE_ANON_KEY não definidos — copie .env.example para .env");
-}
-
-export const supabase = createClient(url ?? "https://placeholder.supabase.co", anonKey ?? "placeholder", {
+export const supabase = createClient(url, anonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,

@@ -14,8 +14,9 @@ export const requireSupabaseAuth = createMiddleware({ type: "function" }).server
   if (!auth?.startsWith("Bearer ")) throw new Response("Unauthorized", { status: 401 });
   const token = auth.slice(7);
 
-  const url = process.env.SUPABASE_URL;
-  const anon = process.env.SUPABASE_ANON_KEY ?? process.env.SUPABASE_PUBLISHABLE_KEY;
+  const url = process.env.EXT_SUPABASE_URL ?? process.env.SUPABASE_URL;
+  const anon =
+    process.env.EXT_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY ?? process.env.SUPABASE_PUBLISHABLE_KEY;
   if (!url || !anon) throw new Response("Server misconfigured", { status: 500 });
 
   const supabase = createClient(url, anon, {
