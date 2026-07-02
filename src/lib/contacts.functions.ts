@@ -11,9 +11,10 @@ const contactSchema = z.object({
   notes: z.string().trim().max(2000).optional().nullable(),
 });
 
+const listInput = z.object({ search: z.string().optional() });
 export const listContacts = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ search: z.string().optional() }).default({}).parse(d))
+  .inputValidator((d: unknown) => listInput.parse(d ?? {}))
   .handler(async ({ context, data }) => {
     let q = context.supabase.from("contacts").select("*").eq("user_id", context.userId).order("name");
     if (data.search) q = q.or(`name.ilike.%${data.search}%,phone.ilike.%${data.search}%,email.ilike.%${data.search}%,company.ilike.%${data.search}%`);

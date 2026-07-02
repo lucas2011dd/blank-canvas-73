@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { Database } from "./types";
+import type { Database } from "./database.types";
 
 // SERVER-ONLY. Nunca importar deste arquivo em componentes/rotas do browser.
 // A extensão .server.ts é bloqueada pelo bundler no client bundle.

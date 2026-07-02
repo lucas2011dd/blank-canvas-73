@@ -1,7 +1,7 @@
 import { createMiddleware } from "@tanstack/react-start";
 import { getRequestHeader } from "@tanstack/react-start/server";
 import { createClient } from "@supabase/supabase-js";
-import type { Database } from "./types";
+import type { Database } from "./database.types";
 
 /**
  * Server-fn middleware: valida o bearer token do Supabase e injeta:
