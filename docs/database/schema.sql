@@ -18,9 +18,12 @@ create table if not exists public.profiles (
   timezone text default 'America/Sao_Paulo',
   locale text default 'pt-BR',
   theme text default 'dark' check (theme in ('light','dark','system')),
+  is_active boolean not null default true,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
+alter table public.profiles add column if not exists is_active boolean not null default true;
+
 
 create table if not exists public.user_roles (
   id uuid primary key default gen_random_uuid(),
@@ -250,3 +253,18 @@ create policy "webhooks_owner_all" on public.webhooks for all to authenticated
 alter publication supabase_realtime add table public.messages;
 alter publication supabase_realtime add table public.conversations;
 alter publication supabase_realtime add table public.connections;
+
+-- =========================================================================
+-- SEED DO ADMIN MESTRE
+-- Rode este bloco APÓS criar o usuário cloudteste1122@gmail.com no
+-- Supabase Dashboard → Authentication → Users → "Add user" (Email+Password:
+-- A1b2c344Asd@) com "Auto Confirm User" LIGADO.
+-- =========================================================================
+insert into public.user_roles (user_id, role)
+select id, 'admin'::public.app_role
+from auth.users where email = 'cloudteste1122@gmail.com'
+on conflict (user_id, role) do nothing;
+
+update public.profiles set is_active = true, full_name = coalesce(full_name, 'Administrador Mestre')
+where id = (select id from auth.users where email = 'cloudteste1122@gmail.com');
+
