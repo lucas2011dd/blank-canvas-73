@@ -29,7 +29,7 @@ function ChatPage() {
 
   const create = useMutation({
     mutationFn: useServerFn(createConversation),
-    onSuccess: (row) => { qc.invalidateQueries({ queryKey: ["conversations"] }); setSelected(row.id); },
+    onSuccess: (row: any) => { qc.invalidateQueries({ queryKey: ["conversations"] }); setSelected(row.id); },
   });
 
   // Realtime subscription

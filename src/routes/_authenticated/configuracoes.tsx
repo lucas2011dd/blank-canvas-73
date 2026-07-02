@@ -130,7 +130,7 @@ function ApiKeysTab() {
 
   const create = useMutation({
     mutationFn: useServerFn(createApiKey),
-    onSuccess: (r) => { setRevealed(r.raw); setName(""); qc.invalidateQueries({ queryKey: ["api-keys"] }); },
+    onSuccess: (r: any) => { setRevealed(r.raw); setName(""); qc.invalidateQueries({ queryKey: ["api-keys"] }); },
   });
   const revoke = useMutation({
     mutationFn: useServerFn(revokeApiKey),

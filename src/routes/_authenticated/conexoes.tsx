@@ -42,7 +42,7 @@ function Page() {
   });
   const reconnect = useMutation({
     mutationFn: useServerFn(reconnectConnection),
-    onSuccess: (row) => { setQr(row.qr_code); qc.invalidateQueries({ queryKey: ["connections"] }); },
+    onSuccess: (row: any) => { setQr(row.qr_code); qc.invalidateQueries({ queryKey: ["connections"] }); },
   });
   const disc = useMutation({
     mutationFn: useServerFn(disconnectConnection),

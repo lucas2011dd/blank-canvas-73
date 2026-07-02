@@ -26,7 +26,7 @@ function Page() {
 
   const importer = useMutation({
     mutationFn: useServerFn(importContacts),
-    onSuccess: (r) => { toast.success(`${r.count} contato(s) importado(s)`); qc.invalidateQueries({ queryKey: ["contacts"] }); },
+    onSuccess: (r: any) => { toast.success(`${r.count} contato(s) importado(s)`); qc.invalidateQueries({ queryKey: ["contacts"] }); },
     onError: (e) => toast.error(e.message),
   });
 
