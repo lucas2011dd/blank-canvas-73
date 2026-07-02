@@ -1,7 +1,7 @@
 import { createMiddleware } from "@tanstack/react-start";
 import { getRequestHeader } from "@tanstack/react-start/server";
 import { createClient } from "@supabase/supabase-js";
-import type { Database } from "./database.types";
+
 
 /**
  * Server-fn middleware: valida o bearer token do Supabase e injeta:
@@ -18,7 +18,7 @@ export const requireSupabaseAuth = createMiddleware({ type: "function" }).server
   const anon = process.env.SUPABASE_ANON_KEY ?? process.env.SUPABASE_PUBLISHABLE_KEY;
   if (!url || !anon) throw new Response("Server misconfigured", { status: 500 });
 
-  const supabase = createClient<Database>(url, anon, {
+  const supabase = createClient(url, anon, {
     global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false, autoRefreshToken: false, storage: undefined },
   });

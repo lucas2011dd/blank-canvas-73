@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { Database } from "./database.types";
+
 
 // SERVER-ONLY. Nunca importar deste arquivo em componentes/rotas do browser.
 // A extensão .server.ts é bloqueada pelo bundler no client bundle.
@@ -12,12 +12,12 @@ if (!url || !serviceKey) {
   );
 }
 
-export const supabaseAdmin = createClient<Database>(url, serviceKey, {
+export const supabaseAdmin = createClient(url, serviceKey, {
   auth: { persistSession: false, autoRefreshToken: false, storage: undefined },
 });
 
 export function supabaseServerAnon() {
-  return createClient<Database>(url!, process.env.SUPABASE_ANON_KEY ?? process.env.SUPABASE_PUBLISHABLE_KEY ?? "", {
+  return createClient(url!, process.env.SUPABASE_ANON_KEY ?? process.env.SUPABASE_PUBLISHABLE_KEY ?? "", {
     auth: { persistSession: false, autoRefreshToken: false, storage: undefined },
   });
 }
