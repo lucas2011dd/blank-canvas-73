@@ -212,51 +212,113 @@ function Page() {
 
 
 
+  const [adoptOpen, setAdoptOpen] = useState(false);
+  const [wipeScope, setWipeScope] = useState<null | "evolution" | "connecthub" | "both">(null);
+  const wipe = useMutation({
+    mutationFn: useServerFn(wipeConnections),
+    onSuccess: (r: any) => {
+      toast.success(`Limpeza concluída — Evolution: ${r.evolutionRemoved}, ConnectHub: ${r.connecthubRemoved}`);
+      qc.invalidateQueries();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Conexões</h1>
           <p className="text-muted-foreground">Gerencie suas conexões WhatsApp, Telegram e customizadas.</p>
         </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild><Button><Plus className="mr-2 h-4 w-4" /> Nova conexão</Button></DialogTrigger>
-          <DialogContent>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const fd = new FormData(e.currentTarget);
-              create.mutate({ data: { name: String(fd.get("name")), description: String(fd.get("description") || ""), provider: fd.get("provider") as "whatsapp" } });
-            }}>
-              <DialogHeader><DialogTitle>Nova conexão</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-4">
-                <div><Label htmlFor="name">Nome</Label><Input id="name" name="name" required maxLength={120} /></div>
-                <div><Label htmlFor="description">Descrição</Label><Input id="description" name="description" maxLength={500} /></div>
-                <div>
-                  <Label htmlFor="provider">Provedor</Label>
-                  <select id="provider" name="provider" className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm">
-                    <option value="whatsapp">WhatsApp</option>
-                    <option value="telegram">Telegram</option>
-                    <option value="custom">Custom</option>
-                  </select>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={() => setAdoptOpen(true)}>
+            <Link2 className="mr-2 h-4 w-4" /> Adotar existente
+          </Button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild><Button><Plus className="mr-2 h-4 w-4" /> Nova instância</Button></DialogTrigger>
+            <DialogContent>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const fd = new FormData(e.currentTarget);
+                create.mutate({ data: { name: String(fd.get("name")), description: String(fd.get("description") || ""), provider: fd.get("provider") as "whatsapp" } });
+              }}>
+                <DialogHeader>
+                  <DialogTitle>Nova instância</DialogTitle>
+                  <DialogDescription>Cria uma nova instância na Evolution + vínculo aqui. Para reusar uma já existente, use "Adotar existente".</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div><Label htmlFor="name">Nome (rótulo)</Label><Input id="name" name="name" required maxLength={120} placeholder="Ex.: WhatsApp 1" /></div>
+                  <div><Label htmlFor="description">Descrição</Label><Input id="description" name="description" maxLength={500} /></div>
+                  <div>
+                    <Label htmlFor="provider">Provedor</Label>
+                    <select id="provider" name="provider" className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm">
+                      <option value="whatsapp">WhatsApp</option>
+                      <option value="telegram">Telegram</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                  </div>
                 </div>
-              </div>
-              <DialogFooter><Button type="submit" disabled={create.isPending}>Criar</Button></DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
+                <DialogFooter><Button type="submit" disabled={create.isPending}>Criar</Button></DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" title="Limpeza"><MoreVertical className="h-4 w-4" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel>Limpeza</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setWipeScope("evolution")}>
+                <Eraser className="mr-2 h-4 w-4" /> Apagar todas na Evolution
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setWipeScope("connecthub")}>
+                <Eraser className="mr-2 h-4 w-4" /> Apagar todas no ConnectHub
+              </DropdownMenuItem>
+              <DropdownMenuItem className="text-destructive" onClick={() => setWipeScope("both")}>
+                <Eraser className="mr-2 h-4 w-4" /> Apagar TUDO (Evolution + ConnectHub)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
+      <AlertDialog open={!!wipeScope} onOpenChange={(o) => !o && setWipeScope(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar limpeza?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {wipeScope === "evolution" && "Todas as instâncias serão removidas da Evolution API. Vínculos no ConnectHub serão mantidos mas ficarão sem sessão."}
+              {wipeScope === "connecthub" && "Todas as conexões do ConnectHub serão removidas. Instâncias na Evolution serão mantidas — você pode adotá-las de novo depois."}
+              {wipeScope === "both" && "Tudo será apagado dos dois lados. Ação irreversível."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { if (wipeScope) wipe.mutate({ data: { scope: wipeScope } }); setWipeScope(null); }}>
+              Confirmar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {data.length === 0 ? (
-        <Card><CardContent className="py-12 text-center text-muted-foreground">Nenhuma conexão ainda. Crie a primeira.</CardContent></Card>
+        <Card><CardContent className="py-12 text-center text-muted-foreground">Nenhuma conexão ainda. Crie uma nova instância ou adote uma existente da Evolution.</CardContent></Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {data.map((c) => (
             <Card key={c.id}>
               <CardHeader>
-                <div className="flex items-start justify-between">
-                  <div>
-                    <CardTitle className="text-base">{c.name}</CardTitle>
-                    <CardDescription className="text-xs">{c.provider}</CardDescription>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <CardTitle className="text-base truncate">{c.name}</CardTitle>
+                    <CardDescription className="text-xs">
+                      {c.provider}
+                      {(c.metadata as any)?.evolution_instance && (
+                        <span className="ml-1 font-mono text-[10px] opacity-70">· {(c.metadata as any).evolution_instance}</span>
+                      )}
+                    </CardDescription>
                   </div>
                   <StatusBadge status={c.status} />
                 </div>
