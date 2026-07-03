@@ -18,9 +18,14 @@ function rateLimited(ip: string): boolean {
 
 function webhookUrl(instanceName: string): string | undefined {
   const previewHost = process.env.LOVABLE_PREVIEW_HOST;
-  const base = process.env.WHATSAPP_WEBHOOK_PUBLIC_URL
-    ?? (previewHost ? `https://${previewHost}` : undefined)
-    ?? process.env.APP_PUBLIC_URL;
+  const previewBase = previewHost ? `https://${previewHost}` : undefined;
+  const configuredBase = process.env.WHATSAPP_WEBHOOK_PUBLIC_URL ?? process.env.APP_PUBLIC_URL;
+  // Em preview, a URL project--*.lovable.app ainda não existe e responde 404.
+  // Prefira o host id-preview--* para a Evolution entregar webhooks de verdade.
+  const configuredPointsToUnpublishedHost = /\/\/project--[^/]+\.lovable\.app/i.test(configuredBase ?? "");
+  const base = configuredPointsToUnpublishedHost && previewBase
+    ? previewBase
+    : (configuredBase ?? previewBase);
   if (!base) return undefined;
   return `${base.replace(/\/$/, "")}/api/public/wa/webhook/${instanceName}`;
 }
