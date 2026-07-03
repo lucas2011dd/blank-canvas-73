@@ -83,6 +83,15 @@ async function removeEvolutionBestEffort(evolution: typeof import("@/lib/evoluti
   return !stillExists;
 }
 
+async function cleanupDb(preferred: any) {
+  try {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    return supabaseAdmin;
+  } catch {
+    return preferred;
+  }
+}
+
 function digitsOnly(v: unknown): string {
   return String(v ?? "").replace(/\D/g, "");
 }
@@ -293,8 +302,8 @@ export const deleteConnection = createServerFn({ method: "POST" })
     // 1) Apaga PRIMEIRO e manualmente no ConnectHub. Não dependemos de FK
     //    cascade nem da Evolution responder; isso remove instância congelada
     //    da tela mesmo quando o Manager não consegue apagar.
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const connecthubRemoved = await hardDeleteConnectionRows(supabaseAdmin, context.userId, [data.id]);
+    const db = await cleanupDb(context.supabase);
+    const connecthubRemoved = await hardDeleteConnectionRows(db, context.userId, [data.id]);
 
     // 2) Best-effort: derruba na Evolution em segundo plano com timeout curto.
     let removedFromEvolution = true;
@@ -433,8 +442,8 @@ export const removeEvolutionInstance = createServerFn({ method: "POST" })
         .filter((r) => instanceNameFromConnection(r) === data.instanceName)
         .map((r) => r.id);
       if (ids.length) {
-        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-        connecthubRemoved = await hardDeleteConnectionRows(supabaseAdmin, context.userId, ids);
+        const db = await cleanupDb(context.supabase);
+        connecthubRemoved = await hardDeleteConnectionRows(db, context.userId, ids);
       }
     }
     return { ok: true, removedFromEvolution, connecthubRemoved };
@@ -462,8 +471,8 @@ export const wipeConnections = createServerFn({ method: "POST" })
     if (data.scope === "connecthub" || data.scope === "both") {
       const ids = (localRows ?? []).map((r) => r.id);
       if (ids.length) {
-        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-        connecthubRemoved = await hardDeleteConnectionRows(supabaseAdmin, context.userId, ids);
+        const db = await cleanupDb(context.supabase);
+        connecthubRemoved = await hardDeleteConnectionRows(db, context.userId, ids);
       }
     }
 
