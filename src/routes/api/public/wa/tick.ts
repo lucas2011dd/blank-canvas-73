@@ -138,6 +138,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
 
           for (const bc of running ?? []) {
             if (Date.now() >= deadline) break;
+            if (activeMigrationConnectionIds.has(bc.connection_id)) continue;
             const { data: conn } = await supabaseAdmin.from("connections")
               .select("status,metadata").eq("id", bc.connection_id).maybeSingle();
             if (!conn) continue;
@@ -240,6 +241,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
 
           for (const row of sched ?? []) {
             if (Date.now() >= deadline) break;
+            if (activeMigrationConnectionIds.has(row.connection_id)) continue;
             const { data: conn } = await supabaseAdmin.from("connections")
               .select("status,metadata").eq("id", row.connection_id).maybeSingle();
             if (!conn) continue;
