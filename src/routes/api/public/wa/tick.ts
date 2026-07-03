@@ -44,16 +44,35 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const nowIso = new Date().toISOString();
         const summary = { broadcasts: 0, scheduled: 0, errors: 0 };
 
-        // Repara webhooks antigos que estavam apontando para a URL publicada 404.
+        // Repara webhooks e reconcilia o status real da Evolution (evita ficar
+        // "connecting" quando o celular já apareceu como conectado).
         const { data: webhookConns } = await supabaseAdmin.from("connections")
-          .select("id,metadata")
+          .select("id,status,metadata")
           .eq("provider", "whatsapp")
           .in("status", ["online", "connecting"])
           .limit(20);
+        const { evolutionStateToStatus } = await import("@/lib/evolution.server");
         for (const conn of webhookConns ?? []) {
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
           const wh = webhookUrl(instance);
           if (wh) await evolution.setWebhook(instance, wh).catch(() => null);
+          try {
+            const s = await evolution.state(instance);
+            const evState = s?.instance?.state;
+            const realStatus = evolutionStateToStatus(evState);
+            if (realStatus !== conn.status) {
+              await supabaseAdmin.from("connections").update({
+                status: realStatus,
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instance,
+                  evolution_state: evState,
+                  reconciled_at: new Date().toISOString(),
+                },
+              }).eq("id", conn.id);
+            }
+          } catch { /* ignora falha transitória */ }
         }
 
         // -------- Broadcasts em execução --------
