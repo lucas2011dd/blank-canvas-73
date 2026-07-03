@@ -80,16 +80,33 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     .eq("user_id", mig.user_id)
     .maybeSingle();
   if (!conn) throw new Error("Conexão não encontrada");
-  if (conn.status !== "online") {
-    const requeued = await requeueTransientFailures(supabase, mig.id);
-    await supabase.from("group_migrations").update({
-      failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
-      next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-      last_error: "Conexão offline — reagendado em 5min",
-    }).eq("id", mig.id);
-    return { migrationId, skipped: true, reason: "connection_offline" };
-  }
   const instance = conn.metadata?.evolution_instance ?? instanceNameFor(mig.connection_id);
+
+  if (conn.status !== "online") {
+    try {
+      const state = await evolution.state(instance);
+      if (state?.instance?.state === "open") {
+        await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      } else {
+        const requeued = await requeueTransientFailures(supabase, mig.id);
+        await supabase.from("connections").update({ status: state?.instance?.state === "connecting" ? "connecting" : "offline" }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+        await supabase.from("group_migrations").update({
+          failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
+          next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+          last_error: "Conexão offline — reconecte o WhatsApp e a migração continuará automaticamente",
+        }).eq("id", mig.id);
+        return { migrationId, skipped: true, reason: "connection_offline" };
+      }
+    } catch {
+      const requeued = await requeueTransientFailures(supabase, mig.id);
+      await supabase.from("group_migrations").update({
+        failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
+        next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+        last_error: "Conexão offline — reagendado em 5min",
+      }).eq("id", mig.id);
+      return { migrationId, skipped: true, reason: "connection_offline" };
+    }
+  }
 
   try {
     const state = await evolution.state(instance);
