@@ -285,45 +285,62 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
 
     // ---------- Conversas (chats individuais) ----------
     let conversationsUpserted = 0;
+    const convRows: Array<{ user_id: string; connection_id: string; title: string; last_message_at: string }> = [];
+    const seenTitles = new Set<string>();
     for (const ch of chatsRaw ?? []) {
       const jid = String(ch.remoteJid ?? ch.id ?? ch.jid ?? "");
       if (!jid || jid.endsWith("@g.us") || jid === "status@broadcast") continue;
       const phone = digitsOnly(jid.split("@")[0]);
-      if (!phone) continue;
-      const { data: existing } = await context.supabase
-        .from("conversations").select("id")
-        .eq("user_id", context.userId)
-        .eq("connection_id", data.id)
-        .eq("title", phone).maybeSingle();
-      if (existing) continue;
-      const { error } = await context.supabase.from("conversations").insert({
+      if (!phone || seenTitles.has(phone)) continue;
+      seenTitles.add(phone);
+      const ts = ch.updatedAt ?? ch.lastMessageTimestamp;
+      convRows.push({
         user_id: context.userId,
         connection_id: data.id,
         title: phone,
-        last_message_at: ch.updatedAt ?? ch.lastMessageTimestamp
-          ? new Date(Number(ch.updatedAt ?? ch.lastMessageTimestamp) * (String(ch.updatedAt ?? ch.lastMessageTimestamp).length <= 10 ? 1000 : 1)).toISOString()
+        last_message_at: ts
+          ? new Date(Number(ts) * (String(ts).length <= 10 ? 1000 : 1)).toISOString()
           : new Date().toISOString(),
       });
-      if (!error) conversationsUpserted++;
+    }
+    if (convRows.length) {
+      const titles = convRows.map((r) => r.title);
+      const { data: existingConvs } = await context.supabase
+        .from("conversations").select("title")
+        .eq("user_id", context.userId).eq("connection_id", data.id)
+        .in("title", titles);
+      const existingSet = new Set((existingConvs ?? []).map((r: any) => r.title));
+      const toInsert = convRows.filter((r) => !existingSet.has(r.title));
+      if (toInsert.length) {
+        const { error } = await context.supabase.from("conversations").insert(toInsert);
+        if (!error) conversationsUpserted = toInsert.length;
+      }
     }
 
     // ---------- Grupos ----------
     let groupsUpserted = 0;
-    for (const g of groupsRaw ?? []) {
-      const jid = String(g.id ?? g.remoteJid ?? "");
-      if (!jid.endsWith("@g.us")) continue;
-      const { error } = await context.supabase.from("whatsapp_groups").upsert({
-        user_id: context.userId,
-        connection_id: data.id,
-        jid,
-        subject: String(g.subject ?? g.name ?? "Grupo"),
-        description: g.desc ?? g.description ?? null,
-        participants_count: Array.isArray(g.participants) ? g.participants.length : (g.size ?? 0),
-        owner: g.owner ?? null,
-        picture_url: g.pictureUrl ?? null,
-        metadata: {},
-      }, { onConflict: "connection_id,jid" });
-      if (!error) groupsUpserted++;
+    const groupRows = (groupsRaw ?? [])
+      .map((g: any) => {
+        const jid = String(g.id ?? g.remoteJid ?? "");
+        if (!jid.endsWith("@g.us")) return null;
+        return {
+          user_id: context.userId,
+          connection_id: data.id,
+          jid,
+          subject: String(g.subject ?? g.name ?? "Grupo"),
+          description: g.desc ?? g.description ?? null,
+          participants_count: Array.isArray(g.participants) ? g.participants.length : (g.size ?? 0),
+          owner: g.owner ?? null,
+          picture_url: g.pictureUrl ?? null,
+          metadata: {},
+        };
+      })
+      .filter(Boolean) as any[];
+    if (groupRows.length) {
+      const { error } = await context.supabase
+        .from("whatsapp_groups")
+        .upsert(groupRows, { onConflict: "connection_id,jid" });
+      if (!error) groupsUpserted = groupRows.length;
     }
 
     await context.supabase.from("connections")
