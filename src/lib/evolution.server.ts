@@ -143,40 +143,50 @@ function urlCandidates(base: string, path: string) {
   const add = (url: string) => {
     if (!candidates.includes(url)) candidates.push(url);
   };
+  add(primary);
   try {
     const url = new URL(primary);
     const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname);
     if (isIp) {
+      const plainIp = new URL(url.toString());
+      plainIp.protocol = "http:";
+      add(plainIp.toString());
+
       const alias = new URL(url.toString());
       alias.protocol = "http:";
       alias.hostname = `${url.hostname.replace(/\./g, "-")}.sslip.io`;
       add(alias.toString());
-
-      const plainIp = new URL(url.toString());
-      plainIp.protocol = "http:";
-      add(plainIp.toString());
     }
   } catch { /* mantém URL original */ }
-  add(primary);
   return candidates;
 }
 
 async function call<T = any>(
   path: string,
-  init: { method?: string; body?: unknown } = {},
+  init: { method?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<T> {
   const { base, key } = env();
   let lastError: Error | null = null;
+  const timeoutMs = init.timeoutMs ?? 15_000;
 
   for (const url of urlCandidates(base, path)) {
-    const res = await fetch(url, {
-      method: init.method ?? "GET",
-      headers: {
-        apikey: key,
-        "Content-Type": "application/json",
-      },
-      body: init.body ? JSON.stringify(init.body) : undefined,
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: init.method ?? "GET",
+        headers: {
+          apikey: key,
+          "Content-Type": "application/json",
+        },
+        body: init.body ? JSON.stringify(init.body) : undefined,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (e: any) {
+      lastError = new Error(e?.name === "TimeoutError" || e?.name === "AbortError"
+        ? `Timeout Evolution API (${timeoutMs}ms) em ${path}`
+        : String(e?.message ?? e));
+      continue;
+    }
     const text = await res.text();
     let json: any = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* pass */ }
@@ -256,8 +266,34 @@ export const evolution = {
     return call(`/instance/connect/${encodeURIComponent(instanceName)}`);
   },
 
-  async state(instanceName: string): Promise<{ instance?: { state?: "open" | "connecting" | "close" } }> {
+  async state(instanceName: string): Promise<any> {
     return call(`/instance/connectionState/${encodeURIComponent(instanceName)}`);
+  },
+
+  async canReadSession(instanceName: string): Promise<boolean> {
+    try {
+      const res = await call<any>(`/chat/findChats/${encodeURIComponent(instanceName)}`, {
+        method: "POST",
+        body: {},
+      });
+      const rows = Array.isArray(res) ? res : (res?.chats ?? res?.data ?? []);
+      return Array.isArray(rows) && rows.length > 0;
+    } catch {
+      return false;
+    }
+  },
+
+  async fetchInstances(): Promise<any[]> {
+    const res = await call<any>("/instance/fetchInstances").catch(() => []);
+    return Array.isArray(res) ? res : (res?.instances ?? res?.data ?? []);
+  },
+
+  async instanceInfo(instanceName: string): Promise<any | null> {
+    const list = await this.fetchInstances();
+    return list.find((row: any) => {
+      const name = row?.name ?? row?.instanceName ?? row?.instance?.instanceName ?? row?.instance?.name;
+      return name === instanceName;
+    }) ?? null;
   },
 
   async logout(instanceName: string) {
@@ -337,8 +373,82 @@ export const evolution = {
   },
 };
 
-export function evolutionStateToStatus(state?: string): "online" | "offline" | "connecting" {
-  if (state === "open") return "online";
-  if (state === "connecting") return "connecting";
+export type EvolutionConnectionStatus = "online" | "offline" | "connecting";
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+export function extractEvolutionConnectionState(source: unknown): string | undefined {
+  const s: any = source;
+  return firstString(
+    s?.instance?.state,
+    s?.instance?.status,
+    s?.instance?.connectionStatus,
+    s?.data?.instance?.state,
+    s?.data?.instance?.status,
+    s?.data?.state,
+    s?.data?.status,
+    s?.state,
+    s?.status,
+    s?.connection,
+    s?.connectionStatus,
+  );
+}
+
+function hasUsablePairing(source: unknown): boolean {
+  const s: any = source;
+  const owner = firstString(s?.ownerJid, s?.owner, s?.profileName, s?.number, s?.instance?.ownerJid, s?.instance?.profileName);
+  const counts = s?._count ?? s?.count ?? {};
+  const hasSyncedRows = Number(counts?.Contact ?? counts?.contacts ?? 0) > 0 || Number(counts?.Chat ?? counts?.chats ?? 0) > 0;
+  return Boolean(owner || hasSyncedRows);
+}
+
+export function evolutionStateToStatus(state?: string): EvolutionConnectionStatus {
+  const normalized = String(state ?? "").trim().toLowerCase();
+  if (!normalized) return "offline";
+  if (["open", "online", "connected", "authenticated", "ready"].includes(normalized)) return "online";
+  if (
+    ["close", "closed", "offline", "disconnected", "logout", "logged_out", "device_removed"].includes(normalized) ||
+    normalized.includes("logged") ||
+    normalized.includes("removed") ||
+    normalized.includes("disconnect") ||
+    normalized.includes("close")
+  ) return "offline";
+  if (
+    ["connecting", "qr", "qrcode", "pairing"].includes(normalized) ||
+    normalized.includes("connect") ||
+    normalized.includes("qr") ||
+    normalized.includes("pair")
+  ) return "connecting";
   return "offline";
+}
+
+export async function resolveEvolutionStatus(instanceName: string): Promise<{
+  status: EvolutionConnectionStatus;
+  state?: string;
+  usable: boolean;
+}> {
+  let state: string | undefined;
+  try {
+    const rawState = await evolution.state(instanceName);
+    state = extractEvolutionConnectionState(rawState);
+    const status = evolutionStateToStatus(state);
+    if (status === "online") return { status, state, usable: true };
+  } catch {
+    // cai para o probe abaixo: algumas instâncias respondem mal ao
+    // connectionState, mas aceitam operações reais de chat/grupo.
+  }
+
+  const info = await evolution.instanceInfo(instanceName).catch(() => null);
+  if (hasUsablePairing(info)) {
+    return { status: "online", state: extractEvolutionConnectionState(info) ?? "paired_session", usable: true };
+  }
+
+  const usable = await evolution.canReadSession(instanceName);
+  if (usable) return { status: "online", state: state ?? "usable_session", usable };
+  return { status: evolutionStateToStatus(state), state, usable };
 }

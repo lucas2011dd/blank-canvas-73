@@ -158,7 +158,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
     // garante que a instância existe (idempotente) e busca o QR
-    const { evolution, evolutionStateToStatus, extractQrImage } = await import("@/lib/evolution.server");
+    const { evolution, extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
     const name = instanceNameFor(data.id);
 
     // tenta criar (se já existir a Evolution retorna erro — ignoramos)
@@ -166,14 +166,24 @@ export const reconnectConnection = createServerFn({ method: "POST" })
 
     let qrBase64: string | null = null;
     let status: "online" | "offline" | "connecting" = "connecting";
-    qrBase64 = await extractQrImage(created);
-    if (!qrBase64) qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
 
-    if (!qrBase64) {
-      try {
-        const s = await evolution.state(name);
-        status = evolutionStateToStatus(s.instance?.state);
-      } catch { /* ignore */ }
+    // Primeiro confere a sessão real: a Evolution pode devolver QR mesmo quando
+    // o celular ainda mostra o aparelho vinculado e os contatos/chats existem.
+    try {
+      const resolved = await resolveEvolutionStatus(name);
+      status = resolved.status;
+    } catch { /* ignore */ }
+
+    if (status !== "online") {
+      qrBase64 = await extractQrImage(created);
+      if (!qrBase64) qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
+      if (qrBase64) {
+        const resolvedAfterQr = await resolveEvolutionStatus(name).catch(() => null);
+        if (resolvedAfterQr?.status === "online") {
+          status = "online";
+          qrBase64 = null;
+        }
+      }
     }
 
     // Instâncias antigas/presas às vezes não devolvem QR no /connect.
@@ -186,7 +196,13 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       if (!qrBase64) {
         qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
       }
-      status = qrBase64 ? "connecting" : "offline";
+      const resolvedAfterRecreate = await resolveEvolutionStatus(name).catch(() => null);
+      if (resolvedAfterRecreate?.status === "online") {
+        status = "online";
+        qrBase64 = null;
+      } else {
+        status = qrBase64 ? "connecting" : "offline";
+      }
     }
 
     const patch = {
@@ -218,15 +234,32 @@ export const refreshConnectionStatus = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
-    const { evolution, evolutionStateToStatus } = await import("@/lib/evolution.server");
+    const { resolveEvolutionStatus } = await import("@/lib/evolution.server");
     const name = instanceNameFor(data.id);
     let status: "online" | "offline" | "connecting" = "offline";
+    let state: string | undefined;
     try {
-      const s = await evolution.state(name);
-      status = evolutionStateToStatus(s.instance?.state);
+      const resolved = await resolveEvolutionStatus(name);
+      status = resolved.status;
+      state = resolved.state;
     } catch { /* ignore */ }
 
-    const patch: Record<string, unknown> = { status, last_sync_at: new Date().toISOString() };
+    const { data: existing } = await context.supabase
+      .from("connections")
+      .select("metadata")
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+
+    const patch: Record<string, unknown> = {
+      status,
+      last_sync_at: new Date().toISOString(),
+      metadata: {
+        ...((existing?.metadata as Record<string, unknown> | null) ?? {}),
+        evolution_instance: name,
+        evolution_state: state ?? status,
+      },
+    };
     if (status === "online") patch.qr_code = null;
 
     const { data: row, error } = await context.supabase
