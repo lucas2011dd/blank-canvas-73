@@ -47,17 +47,21 @@ begin
   return new;
 end $$;
 
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created after insert on auth.users
-  for each row execute function public.handle_new_user();
+do $$
+begin
+  execute 'drop trigger if exists on_auth_user_created on auth.users';
+  execute 'create trigger on_auth_user_created after insert on auth.users for each row execute function public.handle_new_user()';
+end $$;
 
 create or replace function public.touch_updated_at()
 returns trigger language plpgsql as $$
 begin new.updated_at = now(); return new; end $$;
 
-drop trigger if exists profiles_touch on public.profiles;
-create trigger profiles_touch before update on public.profiles
-  for each row execute function public.touch_updated_at();
+do $$
+begin
+  execute 'drop trigger if exists profiles_touch on public.profiles';
+  execute 'create trigger profiles_touch before update on public.profiles for each row execute function public.touch_updated_at()';
+end $$;
 
 create table if not exists public.connections (
   id uuid primary key default gen_random_uuid(),
@@ -73,9 +77,11 @@ create table if not exists public.connections (
   updated_at timestamptz default now()
 );
 create index if not exists idx_connections_user on public.connections(user_id);
-drop trigger if exists connections_touch on public.connections;
-create trigger connections_touch before update on public.connections
-  for each row execute function public.touch_updated_at();
+do $$
+begin
+  execute 'drop trigger if exists connections_touch on public.connections';
+  execute 'create trigger connections_touch before update on public.connections for each row execute function public.touch_updated_at()';
+end $$;
 
 create table if not exists public.contacts (
   id uuid primary key default gen_random_uuid(),
@@ -96,9 +102,11 @@ create index if not exists idx_contacts_user on public.contacts(user_id);
 create index if not exists idx_contacts_search on public.contacts using gin (
   to_tsvector('portuguese', coalesce(name,'') || ' ' || coalesce(phone,'') || ' ' || coalesce(email,'') || ' ' || coalesce(company,''))
 );
-drop trigger if exists contacts_touch on public.contacts;
-create trigger contacts_touch before update on public.contacts
-  for each row execute function public.touch_updated_at();
+do $$
+begin
+  execute 'drop trigger if exists contacts_touch on public.contacts';
+  execute 'create trigger contacts_touch before update on public.contacts for each row execute function public.touch_updated_at()';
+end $$;
 
 create table if not exists public.tags (
   id uuid primary key default gen_random_uuid(),
@@ -167,9 +175,11 @@ create table if not exists public.integrations (
   updated_at timestamptz default now(),
   unique(user_id, provider)
 );
-drop trigger if exists integrations_touch on public.integrations;
-create trigger integrations_touch before update on public.integrations
-  for each row execute function public.touch_updated_at();
+do $$
+begin
+  execute 'drop trigger if exists integrations_touch on public.integrations';
+  execute 'create trigger integrations_touch before update on public.integrations for each row execute function public.touch_updated_at()';
+end $$;
 
 create table if not exists public.api_keys (
   id uuid primary key default gen_random_uuid(),
