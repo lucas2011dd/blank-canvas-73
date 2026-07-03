@@ -1,6 +1,27 @@
 // Cliente HTTP mínimo para a Evolution API v2.
 // Só é importado dentro de handlers de server functions / server routes.
-import QRCode from "qrcode";
+import qrGen from "qrcode-generator";
+
+function qrToSvgDataUrl(text: string): string {
+  const qr = qrGen(0, "M");
+  qr.addData(text);
+  qr.make();
+  const count = qr.getModuleCount();
+  const cell = 8;
+  const margin = 16;
+  const size = count * cell + margin * 2;
+  let rects = "";
+  for (let r = 0; r < count; r++) {
+    for (let c = 0; c < count; c++) {
+      if (qr.isDark(r, c)) {
+        rects += `<rect x="${margin + c * cell}" y="${margin + r * cell}" width="${cell}" height="${cell}"/>`;
+      }
+    }
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">${rects}</g></svg>`;
+  const b64 = typeof btoa === "function" ? btoa(svg) : Buffer.from(svg, "utf-8").toString("base64");
+  return `data:image/svg+xml;base64,${b64}`;
+}
 
 function env() {
   const base = process.env.EVOLUTION_API_URL;
@@ -60,11 +81,7 @@ export async function extractQrImage(source: unknown): Promise<string | null> {
   ]);
   if (!code) return null;
 
-  return QRCode.toDataURL(code, {
-    errorCorrectionLevel: "M",
-    margin: 2,
-    width: 360,
-  });
+  return qrToSvgDataUrl(code);
 }
 
 export const evolution = {
