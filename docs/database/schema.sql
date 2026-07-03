@@ -233,40 +233,60 @@ alter table public.integrations  enable row level security;
 alter table public.api_keys      enable row level security;
 alter table public.webhooks      enable row level security;
 
+drop policy if exists "profiles_self_select" on public.profiles;
 create policy "profiles_self_select" on public.profiles for select to authenticated
   using (auth.uid() = id or public.has_role(auth.uid(), 'admin'));
+drop policy if exists "profiles_self_update" on public.profiles;
 create policy "profiles_self_update" on public.profiles for update to authenticated
   using (auth.uid() = id) with check (auth.uid() = id);
+drop policy if exists "user_roles_self_select" on public.user_roles;
 create policy "user_roles_self_select" on public.user_roles for select to authenticated
   using (auth.uid() = user_id or public.has_role(auth.uid(), 'admin'));
+drop policy if exists "connections_owner_all" on public.connections;
 create policy "connections_owner_all" on public.connections for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "contacts_owner_all" on public.contacts;
 create policy "contacts_owner_all" on public.contacts for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "tags_owner_all" on public.tags;
 create policy "tags_owner_all" on public.tags for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "contact_tags_owner_all" on public.contact_tags;
 create policy "contact_tags_owner_all" on public.contact_tags for all to authenticated
   using (exists (select 1 from public.contacts c where c.id = contact_id and c.user_id = auth.uid()))
   with check (exists (select 1 from public.contacts c where c.id = contact_id and c.user_id = auth.uid()));
+drop policy if exists "conversations_owner_all" on public.conversations;
 create policy "conversations_owner_all" on public.conversations for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "messages_owner_all" on public.messages;
 create policy "messages_owner_all" on public.messages for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "audit_owner_read" on public.audit_logs;
 create policy "audit_owner_read" on public.audit_logs for select to authenticated
   using (auth.uid() = user_id or public.has_role(auth.uid(), 'admin'));
+drop policy if exists "audit_owner_insert" on public.audit_logs;
 create policy "audit_owner_insert" on public.audit_logs for insert to authenticated
   with check (auth.uid() = user_id);
+drop policy if exists "integrations_owner_all" on public.integrations;
 create policy "integrations_owner_all" on public.integrations for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "api_keys_owner_all" on public.api_keys;
 create policy "api_keys_owner_all" on public.api_keys for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "webhooks_owner_all" on public.webhooks;
 create policy "webhooks_owner_all" on public.webhooks for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 -- Realtime ----------------------------------------------------------------
-alter publication supabase_realtime add table public.messages;
-alter publication supabase_realtime add table public.conversations;
-alter publication supabase_realtime add table public.connections;
+do $$ begin
+  execute 'alter publication supabase_realtime add table public.messages';
+exception when duplicate_object then null; end $$;
+do $$ begin
+  execute 'alter publication supabase_realtime add table public.conversations';
+exception when duplicate_object then null; end $$;
+do $$ begin
+  execute 'alter publication supabase_realtime add table public.connections';
+exception when duplicate_object then null; end $$;
 
 -- =========================================================================
 -- SEED DO ADMIN MESTRE
