@@ -298,23 +298,22 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       if (phone) byPhone[phone] = item;
     }
 
-    // NÃO chamar groupParticipants() após addGroupParticipants — a segunda
-    // chamada sobrecarrega o WebSocket da Evolution e derruba a sessão
-    // (device_removed / 401). Usar apenas o retorno do próprio add.
+    // Nunca chamar groupParticipants() após addGroupParticipants(). A segunda
+    // chamada derruba o stream da Evolution (device_removed / 401). A decisão
+    // de sucesso/falha vem 100% do retorno do próprio addGroupParticipants().
     for (const t of batch) {
       const expectedPhone = sendPhoneFor(t.phone);
       const resolvedIt = byPhone[expectedPhone] ?? byPhone[t.phone];
       const rawStatus = String(resolvedIt?.status ?? resolvedIt?.result ?? "").toLowerCase();
-      const apiSuccess = rawStatus === "success" || rawStatus === "200" || resolvedIt?.success === true || (resolvedIt && !resolvedIt?.message && rawStatus === "");
-      const joined = apiSuccess;
+      const apiSuccess = rawStatus === "success" || rawStatus === "200" || resolvedIt?.success === true;
+      const apiSkipped = rawStatus === "skipped" || rawStatus === "already_in_group";
 
-
-      if (joined) {
+      if (apiSuccess) {
         await supabase.from("group_migration_targets").update({
           status: "added", phone: expectedPhone, jid: `${expectedPhone}@s.whatsapp.net`, added_at: new Date().toISOString(),
         }).eq("id", t.id);
         added++;
-      } else if (rawStatus === "skipped" || rawStatus === "already_in_group") {
+      } else if (apiSkipped) {
         await supabase.from("group_migration_targets").update({ status: "skipped", error: rawStatus }).eq("id", t.id);
         skipped++;
       } else {
