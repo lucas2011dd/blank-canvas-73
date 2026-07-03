@@ -82,6 +82,34 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
             const { extractEvolutionConnectionState, evolutionStateToStatus } = await import("@/lib/evolution.server");
             const state = extractEvolutionConnectionState(data) ?? data.state ?? data.status ?? "";
             const status = evolutionStateToStatus(state);
+            if (status === "offline") {
+              const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
+                supabaseAdmin.from("broadcasts")
+                  .select("id", { count: "exact", head: true })
+                  .eq("connection_id", conn.id)
+                  .eq("status", "running"),
+                supabaseAdmin.from("group_migrations")
+                  .select("id", { count: "exact", head: true })
+                  .eq("connection_id", conn.id)
+                  .eq("status", "running"),
+              ]);
+              const hasActiveAutomation = Boolean((activeBroadcasts ?? 0) + (activeMigrations ?? 0));
+              if (hasActiveAutomation) {
+                await supabaseAdmin.from("connections").update({
+                  status: "connecting",
+                  qr_code: null,
+                  last_sync_at: new Date().toISOString(),
+                  metadata: {
+                    ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                    evolution_instance: instanceName,
+                    evolution_state: "silent_reconnect_after_connection_update",
+                    last_connection_update_state: state,
+                    auto_reconnect_at: new Date().toISOString(),
+                  },
+                }).eq("id", conn.id);
+                return new Response("ok");
+              }
+            }
             await supabaseAdmin.from("connections").update({
               status, last_sync_at: new Date().toISOString(),
               metadata: {
