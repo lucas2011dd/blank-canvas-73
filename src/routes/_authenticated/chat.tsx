@@ -91,8 +91,10 @@ function ChatPage() {
   const whatsapps = useMemo(() => connections.filter((c: any) => c.provider === "whatsapp"), [connections]);
 
   return (
-    <div className="h-[calc(100vh-8rem)]">
-      <div className="grid h-full grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
+    // Altura fluida via dvh (respeita a chrome do mobile) descontando header (3.5rem) + padding (2rem)
+    <div className="h-[calc(100dvh-6rem)] sm:h-[calc(100dvh-7rem)]">
+      {/* Mobile: pilha única mostrando a lista OU a conversa selecionada. Desktop (lg+): duas colunas. */}
+      <div className="grid h-full grid-cols-1 gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
         <Card className="flex flex-col overflow-hidden">
           <div className="border-b p-3">
             <div className="flex items-center gap-2">
