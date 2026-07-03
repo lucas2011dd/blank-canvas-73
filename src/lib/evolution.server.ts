@@ -558,7 +558,10 @@ export async function reconnectEvolutionSession(
 
   // Reconexão preservando sessão: usa restart/reload da instância, nunca /connect.
   // /connect pode abrir novo QR em Baileys e invalidar sessões ainda recuperáveis.
-  await evolution.restart(instanceName);
+  // /instance/restart retorna 400 quando a sessão não está conectada.
+  // Isso é esperado após queda total — ignoramos e deixamos o chamador decidir
+  // se aciona /connect para gerar novo QR.
+  await evolution.restart(instanceName).catch(() => undefined);
 
   let latest = before ?? { status: "connecting" as EvolutionConnectionStatus, state: "restart_requested", usable: false };
   for (let attempt = 0; attempt < attempts; attempt++) {
