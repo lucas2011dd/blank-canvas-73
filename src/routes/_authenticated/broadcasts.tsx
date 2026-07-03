@@ -75,7 +75,7 @@ function BroadcastsPage() {
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild><Button>Novo disparo</Button></DialogTrigger>
-          <NewBroadcastDialog connections={whatsapps} contacts={contacts} onSubmit={(v) => create.mutate({ data: v })} pending={create.isPending} />
+          <NewBroadcastDialog connections={whatsapps} contacts={contacts} onSubmit={(v: any) => create.mutate({ data: v })} pending={create.isPending} />
         </Dialog>
       </div>
 

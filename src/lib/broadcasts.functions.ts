@@ -156,7 +156,7 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
         await context.supabase.from("broadcast_targets").update({
           status: "sent", sent_at: new Date().toISOString(),
         }).eq("id", t.id);
-        await context.supabase.rpc("noop").catch(() => null); // no-op tolerante
+        
         await context.supabase.from("broadcasts").update({ sent_count: (bc.sent_count ?? 0) + 1 + results.filter(r => r.ok).length }).eq("id", bc.id);
         results.push({ id: t.id, ok: true });
       } catch (e: any) {
