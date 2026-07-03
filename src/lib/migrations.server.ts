@@ -24,7 +24,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   // Escopa o lookup de conexão pelo user_id da migração, mesmo usando o
   // admin client — evita que uma migração forjada aponte para a conexão de
   // outro usuário.
-  const { data: conn } = await supabaseAdmin
+  const { data: conn } = await supabase
     .from("connections")
     .select("status,metadata,user_id")
     .eq("id", mig.connection_id)
