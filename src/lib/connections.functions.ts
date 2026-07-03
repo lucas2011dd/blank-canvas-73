@@ -216,19 +216,24 @@ export const deleteConnection = createServerFn({ method: "POST" })
     const meta = (existing.metadata as Record<string, unknown> | null) ?? {};
     const name = typeof meta.evolution_instance === "string" ? meta.evolution_instance : instanceNameFor(data.id);
 
+    // 1) Apaga PRIMEIRO no ConnectHub — se a Evolution estiver travada,
+    //    o vínculo local desaparece na hora. FKs são ON DELETE CASCADE.
+    const { error } = await context.supabase.from("connections").delete().eq("id", data.id).eq("user_id", context.userId);
+    if (error) throw new Error(error.message);
+
+    // 2) Best-effort: derruba na Evolution em segundo plano com timeout curto.
     let removedFromEvolution = false;
     if (!data.keepEvolution && existing.provider === "whatsapp") {
       try {
         const { evolution } = await import("@/lib/evolution.server");
-        // logout encerra sessão, delete apaga da Evolution (Prisma + Redis).
-        await evolution.logout(name).catch(() => null);
-        await evolution.remove(name).catch(() => null);
+        const withTimeout = <T,>(p: Promise<T>, ms = 4000) =>
+          Promise.race([p, new Promise<T>((_, r) => setTimeout(() => r(new Error("timeout")), ms))]);
+        await withTimeout(evolution.logout(name)).catch(() => null);
+        await withTimeout(evolution.remove(name)).catch(() => null);
         removedFromEvolution = true;
-      } catch { /* best-effort */ }
+      } catch { /* ignore */ }
     }
 
-    const { error } = await context.supabase.from("connections").delete().eq("id", data.id).eq("user_id", context.userId);
-    if (error) throw new Error(error.message);
     await context.supabase.from("audit_logs").insert({
       user_id: context.userId, action: "delete", entity: "connection", entity_id: data.id,
       metadata: { evolution_instance: name, removedFromEvolution },
