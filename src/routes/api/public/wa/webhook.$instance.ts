@@ -217,6 +217,18 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               }
             }
           } else if (event === "messages.upsert" || event === "MESSAGES_UPSERT") {
+            if (conn.status !== "online") {
+              await supabaseAdmin.from("connections").update({
+                status: "online",
+                qr_code: null,
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instanceName,
+                  evolution_state: "capturing_messages",
+                },
+              }).eq("id", conn.id);
+            }
             const msg = data.message ?? data;
             const key = data.key ?? msg?.key ?? {};
             const fromMe: boolean = key.fromMe === true;

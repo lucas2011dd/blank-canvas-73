@@ -399,14 +399,6 @@ export function extractEvolutionConnectionState(source: unknown): string | undef
   );
 }
 
-function hasStoredPairing(source: unknown): boolean {
-  const s: any = source;
-  const owner = firstString(s?.ownerJid, s?.owner, s?.profileName, s?.number, s?.instance?.ownerJid, s?.instance?.profileName);
-  const counts = s?._count ?? s?.count ?? {};
-  const hasSyncedRows = Number(counts?.Contact ?? counts?.contacts ?? 0) > 0 || Number(counts?.Chat ?? counts?.chats ?? 0) > 0;
-  return Boolean(owner || hasSyncedRows);
-}
-
 export function evolutionStateToStatus(state?: string): EvolutionConnectionStatus {
   const normalized = String(state ?? "").trim().toLowerCase();
   if (!normalized) return "offline";
@@ -439,24 +431,16 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
     state = extractEvolutionConnectionState(rawState);
     statusFromState = evolutionStateToStatus(state);
     if (statusFromState === "online") return { status: "online", state, usable: true };
-    if (statusFromState === "offline") return { status: "offline", state, usable: false };
   } catch {
-    // cai para o probe abaixo: algumas instâncias respondem mal ao
-    // connectionState, mas aceitam operações reais de chat/grupo.
+    // cai para fetchInstances apenas para descobrir estado/QR; dados antigos
+    // de sessão/contatos NÃO significam que o WhatsApp está online agora.
   }
 
   const info = await evolution.instanceInfo(instanceName).catch(() => null);
   const infoState = extractEvolutionConnectionState(info);
   const infoStatus = evolutionStateToStatus(infoState);
   if (infoStatus === "online") return { status: "online", state: infoState, usable: true };
-  if (infoStatus === "offline") return { status: "offline", state: infoState, usable: false };
-
-  const storedPairing = hasStoredPairing(info);
-  if (!storedPairing && !state) {
-    return { status: "offline", state: infoState, usable: false };
-  }
-
-  const usable = await evolution.canReadSession(instanceName);
-  if (usable) return { status: "online", state: state ?? infoState ?? "usable_session", usable };
-  return { status: statusFromState, state: state ?? infoState ?? (storedPairing ? "paired_inactive" : undefined), usable };
+  if (infoStatus === "connecting") return { status: "connecting", state: infoState, usable: false };
+  if (statusFromState === "connecting") return { status: "connecting", state, usable: false };
+  return { status: "offline", state: state ?? infoState ?? "not_connected", usable: false };
 }
