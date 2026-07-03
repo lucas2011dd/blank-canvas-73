@@ -38,19 +38,46 @@ export const createConnection = createServerFn({ method: "POST" })
       .select("*").single();
     if (error) throw new Error(error.message);
 
-    // WhatsApp: cria a instância na Evolution API já com webhook.
+    let qrBase64: string | null = null;
+    let status: "online" | "offline" | "connecting" | "error" = "offline";
+    let evolutionInstance: string | null = null;
+
     if (data.provider === "whatsapp") {
       try {
         const { evolution } = await import("@/lib/evolution.server");
         const name = instanceNameFor(row.id);
-        await evolution.createInstance(name, webhookUrl(name));
-        await context.supabase.from("connections")
-          .update({ metadata: { evolution_instance: name } })
-          .eq("id", row.id);
+        evolutionInstance = name;
+
+        // 1) create — já tenta devolver o QR
+        const created = await evolution.createInstance(name, webhookUrl(name)).catch((e: any) => {
+          console.error("[connections] createInstance falhou:", e?.message);
+          return null;
+        });
+        qrBase64 = created?.qrcode?.base64 ?? null;
+
+        // 2) se não veio, força um /connect (Evolution regenera)
+        if (!qrBase64) {
+          try {
+            const c = await evolution.connect(name);
+            qrBase64 = c.base64 ?? null;
+          } catch (e: any) {
+            console.error("[connections] connect falhou:", e?.message);
+          }
+        }
+        if (qrBase64) status = "connecting";
       } catch (e: any) {
-        // não bloqueia — deixa o usuário tentar reconectar depois
-        console.error("[connections] createInstance falhou:", e?.message);
+        console.error("[connections] evolution setup falhou:", e?.message);
       }
+
+      const { data: updated } = await context.supabase.from("connections")
+        .update({
+          qr_code: qrBase64,
+          status,
+          metadata: evolutionInstance ? { evolution_instance: evolutionInstance } : {},
+          last_sync_at: new Date().toISOString(),
+        })
+        .eq("id", row.id).select("*").single();
+      if (updated) Object.assign(row, updated);
     }
 
     await context.supabase.from("audit_logs").insert({

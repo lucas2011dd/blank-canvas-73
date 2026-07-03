@@ -34,7 +34,13 @@ function Page() {
 
   const create = useMutation({
     mutationFn: useServerFn(createConnection),
-    onSuccess: () => { toast.success("Conexão criada"); setOpen(false); qc.invalidateQueries({ queryKey: ["connections"] }); },
+    onSuccess: (row: any) => {
+      toast.success("Conexão criada");
+      setOpen(false);
+      if (row?.qr_code) setQr(row.qr_code);
+      else if (row?.provider === "whatsapp") toast.info("QR não gerado — clique em Reconectar");
+      qc.invalidateQueries({ queryKey: ["connections"] });
+    },
     onError: (e) => toast.error(e.message),
   });
   const del = useMutation({
@@ -122,6 +128,11 @@ function Page() {
                   <Button size="sm" variant="outline" onClick={() => reconnect.mutate({ data: { id: c.id } })}>
                     <RefreshCw className="mr-1 h-3 w-3" /> Reconectar
                   </Button>
+                  {c.qr_code && c.status !== "online" && (
+                    <Button size="sm" variant="outline" onClick={() => setQr(c.qr_code)}>
+                      <QrCode className="mr-1 h-3 w-3" /> QR
+                    </Button>
+                  )}
                   {c.status !== "offline" && (
                     <Button size="sm" variant="outline" onClick={() => disc.mutate({ data: { id: c.id } })}>
                       Desconectar
