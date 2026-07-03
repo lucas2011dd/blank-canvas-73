@@ -197,6 +197,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     let qrBase64: string | null = null;
     let status: "online" | "offline" | "connecting" = existing.status as "online" | "offline" | "connecting";
     let state: string | undefined;
+    let suppressManualQr = false;
 
     const wh = buildWebhookUrl(name);
     if (wh) await evolution.setWebhook(name, wh).catch(() => null);
@@ -236,11 +237,12 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       if (hasActiveAutomation) {
         status = "connecting";
         qrBase64 = null;
+        suppressManualQr = true;
         state = state ?? "silent_reconnect_during_automation";
       }
     }
 
-    if (status !== "online" && !state?.includes("silent_reconnect_during_automation")) {
+    if (status !== "online" && !suppressManualQr) {
       const connected = await evolution.connect(name).catch(() => null);
       qrBase64 = await extractQrImage(connected);
       if (!qrBase64) {
