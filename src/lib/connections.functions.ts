@@ -202,22 +202,213 @@ export const createConnection = createServerFn({ method: "POST" })
 
 export const deleteConnection = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .inputValidator((d: unknown) => z.object({
+    id: z.string().uuid(),
+    keepEvolution: z.boolean().optional(),
+  }).parse(d))
   .handler(async ({ context, data }) => {
-    // remove instância na Evolution antes (best-effort)
-    try {
-      const { evolution } = await import("@/lib/evolution.server");
-      const name = instanceNameFor(data.id);
-      await evolution.logout(name).catch(() => null);
-      await evolution.remove(name).catch(() => null);
-    } catch { /* ignore */ }
+    // 1) Descobre o nome REAL da instância na Evolution (pode ter sido adotada).
+    const { data: existing } = await context.supabase
+      .from("connections").select("metadata,provider")
+      .eq("id", data.id).eq("user_id", context.userId).maybeSingle();
+    if (!existing) throw new Error("Conexão não encontrada");
+
+    const meta = (existing.metadata as Record<string, unknown> | null) ?? {};
+    const name = typeof meta.evolution_instance === "string" ? meta.evolution_instance : instanceNameFor(data.id);
+
+    let removedFromEvolution = false;
+    if (!data.keepEvolution && existing.provider === "whatsapp") {
+      try {
+        const { evolution } = await import("@/lib/evolution.server");
+        // logout encerra sessão, delete apaga da Evolution (Prisma + Redis).
+        await evolution.logout(name).catch(() => null);
+        await evolution.remove(name).catch(() => null);
+        removedFromEvolution = true;
+      } catch { /* best-effort */ }
+    }
 
     const { error } = await context.supabase.from("connections").delete().eq("id", data.id).eq("user_id", context.userId);
     if (error) throw new Error(error.message);
     await context.supabase.from("audit_logs").insert({
       user_id: context.userId, action: "delete", entity: "connection", entity_id: data.id,
+      metadata: { evolution_instance: name, removedFromEvolution },
     });
+    return { ok: true, removedFromEvolution, evolutionInstance: name };
+  });
+
+// ------------------------------------------------------------------
+// Adoção de instâncias já existentes na Evolution + limpezas em massa.
+// ------------------------------------------------------------------
+
+// Lista todas as instâncias vivas na Evolution API e marca quais já estão
+// vinculadas a alguma conexão do usuário (para não aparecerem duplicadas).
+export const listEvolutionInstances = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { evolution, extractEvolutionConnectionState, evolutionStateToStatus } = await import("@/lib/evolution.server");
+    const [rawList, { data: linkedRows }] = await Promise.all([
+      evolution.fetchInstances().catch(() => []),
+      context.supabase.from("connections").select("id,name,metadata,user_id").eq("user_id", context.userId),
+    ]);
+
+    const linkedMap = new Map<string, { id: string; label: string }>();
+    for (const row of linkedRows ?? []) {
+      const meta = (row.metadata as Record<string, unknown> | null) ?? {};
+      const inst = typeof meta.evolution_instance === "string" ? meta.evolution_instance : instanceNameFor(row.id);
+      linkedMap.set(inst, { id: row.id, label: row.name });
+    }
+
+    return (rawList ?? []).map((raw: any) => {
+      const instanceName = raw?.name ?? raw?.instanceName ?? raw?.instance?.instanceName ?? raw?.instance?.name ?? "";
+      const state = extractEvolutionConnectionState(raw);
+      const status = evolutionStateToStatus(state);
+      const ownerJid = raw?.ownerJid ?? raw?.owner ?? raw?.instance?.owner ?? raw?.instance?.ownerJid ?? null;
+      const profileName = raw?.profileName ?? raw?.instance?.profileName ?? null;
+      const profilePic = raw?.profilePicUrl ?? raw?.instance?.profilePicUrl ?? null;
+      const linked = linkedMap.get(instanceName);
+      return {
+        instanceName,
+        status,
+        state: state ?? null,
+        ownerJid,
+        profileName,
+        profilePic,
+        linked: linked ? { id: linked.id, label: linked.label } : null,
+      };
+    }).filter((r) => r.instanceName);
+  });
+
+// Adota uma instância existente na Evolution, criando um vínculo no ConnectHub
+// com o rótulo escolhido (ex.: "WhatsApp 1"). NÃO cria uma nova instância.
+export const attachEvolutionInstance = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({
+    instanceName: z.string().trim().min(1),
+    label: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(500).optional(),
+  }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { evolution, extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+
+    // Já vinculado a outra conexão? Bloqueia para evitar duplicata.
+    const { data: dupes } = await context.supabase
+      .from("connections").select("id,name,metadata")
+      .eq("user_id", context.userId);
+    for (const row of dupes ?? []) {
+      const meta = (row.metadata as Record<string, unknown> | null) ?? {};
+      if (meta.evolution_instance === data.instanceName) {
+        throw new Error(`Esta instância já está vinculada como "${row.name}".`);
+      }
+    }
+
+    const info = await evolution.instanceInfo(data.instanceName).catch(() => null);
+    if (!info) throw new Error("Instância não encontrada na Evolution API");
+
+    const resolved = await resolveEvolutionStatus(data.instanceName).catch(() => null);
+    const status = resolved?.status ?? "offline";
+
+    // (Re)aponta webhook para nosso endpoint público — Evolution pode ter sido
+    // criada manualmente sem webhook configurado.
+    const wh = buildWebhookUrl(data.instanceName);
+    if (wh) await evolution.setWebhook(data.instanceName, wh).catch(() => null);
+
+    let qrBase64: string | null = null;
+    if (status !== "online") {
+      const connected = await evolution.connect(data.instanceName).catch(() => null);
+      qrBase64 = await extractQrImage(connected);
+    }
+
+    const { data: row, error } = await context.supabase.from("connections").insert({
+      user_id: context.userId,
+      name: data.label,
+      description: data.description ?? "",
+      provider: "whatsapp",
+      status: status === "online" ? "online" : (qrBase64 ? "connecting" : status),
+      qr_code: qrBase64,
+      last_sync_at: new Date().toISOString(),
+      metadata: { evolution_instance: data.instanceName, adopted: true },
+    }).select("*").single();
+    if (error) throw new Error(error.message);
+
+    await context.supabase.from("audit_logs").insert({
+      user_id: context.userId, action: "attach", entity: "connection", entity_id: row.id,
+      metadata: { evolution_instance: data.instanceName },
+    });
+    return row;
+  });
+
+// Remove UMA instância na Evolution (usada pelo menu "Limpar" na tela de
+// instâncias existentes). Se `alsoRemoveConnection` for true, também apaga
+// o vínculo no ConnectHub.
+export const removeEvolutionInstance = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({
+    instanceName: z.string().trim().min(1),
+    alsoRemoveConnection: z.boolean().optional(),
+  }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { evolution } = await import("@/lib/evolution.server");
+    await evolution.logout(data.instanceName).catch(() => null);
+    await evolution.remove(data.instanceName).catch(() => null);
+
+    if (data.alsoRemoveConnection) {
+      const { data: rows } = await context.supabase
+        .from("connections").select("id,metadata").eq("user_id", context.userId);
+      const ids = (rows ?? [])
+        .filter((r) => {
+          const meta = (r.metadata as Record<string, unknown> | null) ?? {};
+          const inst = typeof meta.evolution_instance === "string" ? meta.evolution_instance : instanceNameFor(r.id);
+          return inst === data.instanceName;
+        })
+        .map((r) => r.id);
+      if (ids.length) {
+        await context.supabase.from("connections").delete().in("id", ids).eq("user_id", context.userId);
+      }
+    }
     return { ok: true };
+  });
+
+// Limpeza em massa. `scope` decide o que fazer:
+//  - "evolution"       → apaga TODAS as instâncias na Evolution (mantém ConnectHub)
+//  - "connecthub"      → apaga TODAS as conexões do usuário no ConnectHub (mantém Evolution)
+//  - "both"            → apaga tudo dos dois lados
+export const wipeConnections = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({
+    scope: z.enum(["evolution", "connecthub", "both"]),
+  }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { evolution } = await import("@/lib/evolution.server");
+
+    let evolutionRemoved = 0;
+    if (data.scope === "evolution" || data.scope === "both") {
+      const list = await evolution.fetchInstances().catch(() => []);
+      for (const raw of list ?? []) {
+        const name = raw?.name ?? raw?.instanceName ?? raw?.instance?.instanceName ?? raw?.instance?.name;
+        if (!name) continue;
+        await evolution.logout(name).catch(() => null);
+        await evolution.remove(name).catch(() => null);
+        evolutionRemoved++;
+      }
+    }
+
+    let connecthubRemoved = 0;
+    if (data.scope === "connecthub" || data.scope === "both") {
+      const { data: rows } = await context.supabase
+        .from("connections").select("id").eq("user_id", context.userId);
+      const ids = (rows ?? []).map((r) => r.id);
+      if (ids.length) {
+        const { error } = await context.supabase.from("connections").delete().in("id", ids).eq("user_id", context.userId);
+        if (error) throw new Error(error.message);
+        connecthubRemoved = ids.length;
+      }
+    }
+
+    await context.supabase.from("audit_logs").insert({
+      user_id: context.userId, action: "wipe", entity: "connection", entity_id: null,
+      metadata: { scope: data.scope, evolutionRemoved, connecthubRemoved },
+    });
+    return { evolutionRemoved, connecthubRemoved };
   });
 
 export const reconnectConnection = createServerFn({ method: "POST" })
