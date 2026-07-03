@@ -9,6 +9,23 @@ function instanceNameFor(id: string) {
 const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
 const jidToPhone = (jid: string) => digits(jid.split("@")[0] ?? "");
 
+function participantPhone(p: any): string {
+  return digits(
+    p?.phoneNumber ??
+    p?.phone_number ??
+    p?.number ??
+    p?.participantPn ??
+    p?.pn ??
+    p?.jid ??
+    p?.id ??
+    "",
+  );
+}
+
+function participantJid(p: any): string {
+  return String(p?.phoneNumber ?? p?.jid ?? p?.id ?? "");
+}
+
 // Detecta admin de forma robusta — Evolution v2 varia entre versões:
 //  - { admin: "admin" | "superadmin" | null }
 //  - { admin: true } (booleano)
@@ -37,8 +54,8 @@ export const previewGroupParticipants = createServerFn({ method: "POST" })
     const { evolution } = await import("@/lib/evolution.server");
     const parts = await evolution.groupParticipants(instance, data.sourceGroupJid);
     const rows = parts.map((p: any) => {
-      const jid = String(p.id ?? p.jid ?? "");
-      return { jid, phone: jidToPhone(jid), admin: isAdminParticipant(p) };
+      const jid = participantJid(p);
+      return { jid, phone: participantPhone(p), admin: isAdminParticipant(p) };
     }).filter((r) => r.phone.length >= 8);
     return { total: rows.length, participants: rows };
   });
@@ -110,7 +127,7 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     });
 
     let allPhones = Array.from(new Set(
-      filtered.map((p: any) => jidToPhone(String(p.id ?? p.jid ?? "")))
+      filtered.map((p: any) => participantPhone(p))
         .filter((p) => p.length >= 8 && !exclude.has(p))
     ));
     if (data.shuffleOrder) {
@@ -138,8 +155,7 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     if (data.mode === "new_group") {
       // Cria com o primeiro batch — Evolution exige participantes na criação.
       const seed = allPhones.slice(0, data.batchSize);
-      const seedJids = seed.map((p) => `${p}@s.whatsapp.net`);
-      const created = await evolution.createGroup(instance, data.targetSubject!, seedJids, data.targetDescription);
+      const created = await evolution.createGroup(instance, data.targetSubject!, seed, data.targetDescription);
       targetGroupJid = created?.groupJid ?? created?.id ?? created?.data?.groupJid ?? created?.data?.id ?? null;
       targetSubject = data.targetSubject!;
       if (!targetGroupJid) throw new Error("Falha ao criar o grupo de destino");
@@ -148,8 +164,7 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       try {
         const parts = await evolution.groupParticipants(instance, targetGroupJid);
         const joined = new Set(parts.map((p: any) => {
-          const j = String(p?.id ?? p?.jid ?? "");
-          return j.split("@")[0]?.replace(/\D/g, "") ?? "";
+          return participantPhone(p);
         }).filter(Boolean));
         for (const p of seed) if (joined.has(p)) initialAdded.push(p);
       } catch {
