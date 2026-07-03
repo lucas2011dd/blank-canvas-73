@@ -95,7 +95,7 @@ function ChatPage() {
     <div className="h-[calc(100dvh-6rem)] sm:h-[calc(100dvh-7rem)]">
       {/* Mobile: pilha única mostrando a lista OU a conversa selecionada. Desktop (lg+): duas colunas. */}
       <div className="grid h-full grid-cols-1 gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
-        <Card className="flex flex-col overflow-hidden">
+        <Card className={`flex flex-col overflow-hidden min-w-0 ${selected ? "hidden lg:flex" : "flex"}`}>
           <div className="border-b p-3">
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
