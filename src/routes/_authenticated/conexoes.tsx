@@ -154,9 +154,17 @@ function Page() {
           <DialogHeader><DialogTitle className="flex items-center gap-2"><QrCode className="h-5 w-5" /> Escaneie o QR Code</DialogTitle></DialogHeader>
           <div className="flex flex-col items-center gap-3 py-4">
             <div className="rounded-lg bg-white p-4">
-              <img alt="QR" width={220} height={220} src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(qr ?? "")}`} />
+              {qr ? (
+                <img
+                  alt="QR"
+                  width={260}
+                  height={260}
+                  src={qr.startsWith("data:") ? qr : `data:image/png;base64,${qr}`}
+                />
+              ) : null}
             </div>
-            <p className="text-center text-xs text-muted-foreground">Abra o WhatsApp → Aparelhos conectados → Conectar</p>
+            <p className="text-center text-xs text-muted-foreground">Abra o WhatsApp → Aparelhos conectados → Conectar um aparelho</p>
+            <p className="text-center text-xs text-muted-foreground">O status será atualizado automaticamente após pareamento.</p>
           </div>
         </DialogContent>
       </Dialog>
