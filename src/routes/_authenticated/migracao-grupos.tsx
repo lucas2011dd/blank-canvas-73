@@ -156,8 +156,11 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
   const [targetSubject, setTargetSubject] = useState("");
   const [targetJid, setTargetJid] = useState("");
   const [batchSize, setBatchSize] = useState(1);
-  const [minDelay, setMinDelay] = useState(15);
-  const [maxDelay, setMaxDelay] = useState(30);
+  // CORREÇÃO: Defaults de delay aumentados para 25s/60s.
+  // Valores abaixo de 20s causam device_removed no WhatsApp ao adicionar
+  // membros em grupos. O WhatsApp interpreta intervalos curtos como spam.
+  const [minDelay, setMinDelay] = useState(25);
+  const [maxDelay, setMaxDelay] = useState(60);
 
   const [skipAdmins, setSkipAdmins] = useState(true);
   const [skipSelf, setSkipSelf] = useState(true);
@@ -240,8 +243,11 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <div>
-            <Label className="text-xs">Batch</Label>
-            <Input type="number" min={1} max={3} value={batchSize} onChange={(e) => setBatchSize(Math.max(1, Math.min(3, Number(e.target.value) || 1)))} />
+            {/* CORREÇÃO: Batch fixo em 1. O servidor já força max=1, mas
+                exibir opção de 2-3 confundia o usuário e podia causar
+                expectativa errada de velocidade. */}
+            <Label className="text-xs">Batch (fixo: 1)</Label>
+            <Input type="number" min={1} max={1} value={1} readOnly className="opacity-60 cursor-not-allowed" />
           </div>
           <div>
             <Label className="text-xs">Delay min (s)</Label>
@@ -280,7 +286,8 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
 
         <p className="text-xs text-muted-foreground">
           <b>100% automático:</b> a migração roda 24/7 pelo tick (~1/min) — não precisa clicar em "Batch agora".
-          Adiciona com ritmo seguro: 1 contato por chamada real, delay mínimo {minDelay}–{maxDelay}s. Isso evita travar a fila da Evolution e reduzir logout.
+          Adiciona com ritmo seguro: 1 contato por chamada real, delay {minDelay}–{maxDelay}s entre cada adição.
+          <b> Recomendado: mínimo 25s, máximo 60s</b> para evitar que o WhatsApp detecte como spam e desconecte a sessão.
         </p>
       </div>
       <DialogFooter>

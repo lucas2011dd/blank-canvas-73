@@ -41,8 +41,12 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         // processamos com retry/backoff, sem prender a Evolution em 30s.
         try {
           const { drainWebhookQueue } = await import("@/lib/webhook-processor.server");
-          const drainDeadline = Date.now() + 8_000;
-          const drainRes = await drainWebhookQueue(supabaseAdmin, 100, drainDeadline);
+          // CORREÇÃO: Limite de eventos por drain reduzido de 100 para 20.
+          // Processar 100 webhooks de uma vez bloqueava o tick por até 15s,
+          // deixando as migrações sem budget de tempo e causando timeouts
+          // que o Baileys interpretava como queda da sessão.
+          const drainDeadline = Date.now() + 6_000;
+          const drainRes = await drainWebhookQueue(supabaseAdmin, 20, drainDeadline);
           summary.webhooks = drainRes.processed;
           summary.webhookErrors = drainRes.failed;
         } catch (e) {
@@ -129,8 +133,11 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         //   TICK_RECOVERY_MS     (default 10000) — retry após reconexão
         //   TICK_MIGRATION_RETRY_MS (default 20000) — retry migração após erro
         const budgetMs = Number(process.env.TICK_BUDGET_MS ?? 25_000);
-        const recoveryMs = Number(process.env.TICK_RECOVERY_MS ?? 10_000);
-        const migRetryMs = Number(process.env.TICK_MIGRATION_RETRY_MS ?? 20_000);
+        const recoveryMs = Number(process.env.TICK_RECOVERY_MS ?? 15_000);
+        // CORREÇÃO: migRetryMs aumentado de 20s para 35s.
+        // Após um erro de migração, o Baileys precisa de mais tempo para
+        // estabilizar o WebSocket antes da próxima tentativa de add.
+        const migRetryMs = Number(process.env.TICK_MIGRATION_RETRY_MS ?? 35_000);
         const deadline = Date.now() + Math.max(2_000, budgetMs);
         const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
         const migResults: any[] = [];
