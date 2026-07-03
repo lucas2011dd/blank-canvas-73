@@ -293,14 +293,12 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
       const phone = digitsOnly(jid.split("@")[0]);
       if (!phone || seenTitles.has(phone)) continue;
       seenTitles.add(phone);
-      const ts = ch.updatedAt ?? ch.lastMessageTimestamp;
+      const ts = ch.updatedAt ?? ch.lastMessageTimestamp ?? ch.t ?? ch.messageTimestamp;
       convRows.push({
         user_id: context.userId,
         connection_id: data.id,
         title: phone,
-        last_message_at: ts
-          ? new Date(Number(ts) * (String(ts).length <= 10 ? 1000 : 1)).toISOString()
-          : new Date().toISOString(),
+        last_message_at: safeToIso(ts),
       });
     }
     if (convRows.length) {
