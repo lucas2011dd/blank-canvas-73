@@ -275,24 +275,12 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   }
 
   const phones = batch.map((t: any) => t.phone);
-  const phoneByOriginal = new Map<string, string>();
 
-  try {
-    if (process.env.MIGRATION_REFRESH_SOURCE_NUMBERS_EACH_BATCH === "true") {
-      const sourceParticipants = await evolution.groupParticipants(instance, mig.source_group_jid);
-      for (const p of sourceParticipants) {
-        const participant: any = p;
-        const realPhone = participantPhone(p);
-        if (!realPhone) continue;
-        for (const candidate of [participant?.id, participant?.jid, participant?.phoneNumber, participant?.phone_number, participant?.number]) {
-          const key = digits(candidate);
-          if (key) phoneByOriginal.set(key, realPhone);
-        }
-      }
-    }
-  } catch { /* se falhar, processa com o que já está salvo */ }
-
-  const sendPhoneFor = (phone: string) => phoneByOriginal.get(phone) ?? phone;
+  // Worker de migração NÃO faz leitura de participantes durante o batch.
+  // Isso evita chamadas pesadas próximas ao addGroupParticipants(), que podem
+  // derrubar o stream da Evolution com device_removed / 401. Os números já
+  // foram normalizados/salvos antes; aqui só usamos o retorno do próprio add.
+  const sendPhoneFor = (phone: string) => phone;
   let added = 0, failed = 0, skipped = 0;
   const errors: Record<string, string> = {};
 
@@ -315,7 +303,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     for (const t of batch) {
       const expectedPhone = sendPhoneFor(t.phone);
       const resolvedIt = byPhone[expectedPhone] ?? byPhone[t.phone];
-      const rawStatus = String(resolvedIt?.status ?? resolvedIt?.result ?? "");
+      const rawStatus = String(resolvedIt?.status ?? resolvedIt?.result ?? "").toLowerCase();
       const apiSuccess = rawStatus === "success" || rawStatus === "200" || resolvedIt?.success === true || (resolvedIt && !resolvedIt?.message && rawStatus === "");
       const joined = apiSuccess;
 
