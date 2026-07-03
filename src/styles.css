@@ -130,12 +130,28 @@
 
 @layer base {
   * { border-color: var(--color-border); }
-  html { font-family: var(--font-sans); }
+  html {
+    font-family: var(--font-sans);
+    /* Tipografia fluida: escala suave entre 14px e 16px */
+    font-size: clamp(0.875rem, 0.8rem + 0.35vw, 1rem);
+    -webkit-text-size-adjust: 100%;
+  }
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
     -webkit-font-smoothing: antialiased;
+    /* Bloqueia scroll horizontal acidental causado por filhos com min-width intrínseco */
+    overflow-x: hidden;
+    overscroll-behavior-y: none;
   }
+  /* Alvos de toque com no mínimo 44x44px em telas coarse (touch) */
+  @media (pointer: coarse) {
+    button, a, [role="button"], input[type="checkbox"], input[type="radio"] {
+      min-height: 2.75rem;
+    }
+  }
+  /* Imagens fluidas por padrão evitam CLS */
+  img, video { max-width: 100%; height: auto; }
 }
 
 @utility bg-gradient-hero {
