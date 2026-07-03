@@ -120,8 +120,6 @@ function webhookConfig(url: string, key: string) {
     "MESSAGES_UPSERT",
     "CONNECTION_UPDATE",
     "QRCODE_UPDATED",
-    "CONTACTS_UPSERT",
-    "CHATS_UPSERT",
     "GROUPS_UPSERT",
     "GROUP_PARTICIPANTS_UPDATE",
   ];
@@ -129,9 +127,9 @@ function webhookConfig(url: string, key: string) {
     enabled: true,
     url,
     byEvents: false,
-    base64: true,
+    base64: false,
     webhook_by_events: false,
-    webhook_base64: true,
+    webhook_base64: false,
     events,
     headers: webhookAuthHeaders(key),
   };
