@@ -45,6 +45,21 @@ function safeToIso(ts: unknown): string {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function stateNeedsQr(state: unknown): boolean {
+  const s = String(state ?? "").trim().toLowerCase();
+  return (
+    s.includes("qr") ||
+    s.includes("pair") ||
+    s.includes("not_connected") ||
+    s.includes("not connected") ||
+    s.includes("unpaired") ||
+    s.includes("logged") ||
+    s.includes("logout") ||
+    s.includes("removed") ||
+    s.includes("401")
+  );
+}
+
 async function getFreshWhatsappQr(
   evolution: typeof import("@/lib/evolution.server").evolution,
   extractQrImage: typeof import("@/lib/evolution.server").extractQrImage,
@@ -186,7 +201,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       throw new Error("Servidor WhatsApp indisponível no momento; mantive a sessão atual sem gerar novo QR.");
     }
 
-    if (status !== "online") {
+    if (status === "offline" || stateNeedsQr(state)) {
       const connected = await evolution.connect(name).catch(() => null);
       qrBase64 = await extractQrImage(connected);
       if (!qrBase64) {
