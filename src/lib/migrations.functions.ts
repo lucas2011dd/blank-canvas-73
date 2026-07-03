@@ -9,6 +9,18 @@ function instanceNameFor(id: string) {
 const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
 const jidToPhone = (jid: string) => digits(jid.split("@")[0] ?? "");
 
+// Detecta admin de forma robusta — Evolution v2 varia entre versões:
+//  - { admin: "admin" | "superadmin" | null }
+//  - { admin: true } (booleano)
+//  - { isAdmin: bool, isSuperAdmin: bool }
+//  - { role: "admin" | "superadmin" }
+function isAdminParticipant(p: any): boolean {
+  const a = p?.admin ?? p?.role ?? null;
+  if (a === "admin" || a === "superadmin" || a === true) return true;
+  if (p?.isAdmin === true || p?.isSuperAdmin === true) return true;
+  return false;
+}
+
 // Preview de participantes do grupo de origem (sem persistir nada).
 export const previewGroupParticipants = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
