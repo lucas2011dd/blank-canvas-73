@@ -43,6 +43,18 @@ function isTransientEvolutionError(error: unknown): boolean {
   );
 }
 
+function isLoggedOutEvolutionError(error: unknown): boolean {
+  const haystack = JSON.stringify(error, Object.getOwnPropertyNames(error as object)).toLowerCase();
+  return (
+    haystack.includes("device_removed") ||
+    haystack.includes("statusreason\":401") ||
+    haystack.includes("statusreason:401") ||
+    haystack.includes("logout") ||
+    haystack.includes("logged out") ||
+    haystack.includes("stream:error") && haystack.includes("401")
+  );
+}
+
 async function requeueTransientFailures(supabase: any, migrationId: string) {
   const { data: failedRows } = await supabase.from("group_migration_targets")
     .select("id,error")
@@ -94,11 +106,14 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       } else {
         await tryReconnect();
         const requeued = await requeueTransientFailures(supabase, mig.id);
+        const mustRescan = state?.instance?.state === "close" || isLoggedOutEvolutionError(state);
         await supabase.from("connections").update({ status: state?.instance?.state === "connecting" ? "connecting" : "offline" }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
         await supabase.from("group_migrations").update({
           failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
           next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-          last_error: "WhatsApp desconectado — tentando religar; a fila retoma sozinha em 30s",
+          last_error: mustRescan
+            ? "WhatsApp saiu dos aparelhos conectados — escaneie o QR novamente; a migração continua sozinha depois"
+            : "WhatsApp desconectado — tentando religar; a fila retoma sozinha em 30s",
         }).eq("id", mig.id);
         return { migrationId, skipped: true, reason: "connection_offline" };
       }
@@ -123,11 +138,21 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       await supabase.from("group_migrations").update({
         failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
         next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-        last_error: "Conexão caiu na Evolution — tentando religar; fila retoma em 30s",
+        last_error: state?.instance?.state === "close"
+          ? "WhatsApp desconectado/removido — escaneie o QR novamente; fila retoma em 30s"
+          : "Conexão caiu na Evolution — tentando religar; fila retoma em 30s",
       }).eq("id", mig.id);
       return { migrationId, skipped: true, reason: "evolution_connection_closed" };
     }
   } catch (e) {
+    if (isLoggedOutEvolutionError(e)) {
+      await supabase.from("connections").update({ status: "offline", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      await supabase.from("group_migrations").update({
+        next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
+        last_error: "WhatsApp removido dos aparelhos conectados — escaneie o QR novamente; a fila será retomada",
+      }).eq("id", mig.id);
+      return { migrationId, skipped: true, reason: "device_removed" };
+    }
     if (isTransientEvolutionError(e)) {
       await supabase.from("group_migrations").update({
         next_attempt_at: new Date(Date.now() + 30_000).toISOString(),

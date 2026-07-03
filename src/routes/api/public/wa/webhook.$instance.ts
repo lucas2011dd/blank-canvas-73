@@ -11,9 +11,12 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
     handlers: {
       POST: async ({ request, params }) => {
         // FAIL-CLOSED: se nenhum segredo estiver configurado, rejeita.
-        const expected =
-          process.env.EVOLUTION_WEBHOOK_SECRET ?? process.env.EVOLUTION_API_KEY ?? "";
-        const got = request.headers.get("apikey") ?? "";
+        const expected = process.env.EVOLUTION_WEBHOOK_SECRET ?? process.env.EVOLUTION_API_KEY ?? "";
+        const got =
+          request.headers.get("apikey") ??
+          request.headers.get("x-evolution-webhook-secret") ??
+          request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ??
+          "";
         if (!expected || got !== expected) {
           return new Response("unauthorized", { status: 401 });
         }
@@ -44,6 +47,12 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               state === "connecting" ? "connecting" : "offline";
             await supabaseAdmin.from("connections").update({
               status, last_sync_at: new Date().toISOString(),
+              metadata: {
+                evolution_instance: instanceName,
+                evolution_state: state,
+                status_reason: data.statusReason ?? data.reason ?? null,
+                disconnected_at: status === "offline" ? new Date().toISOString() : null,
+              },
               ...(status === "online" ? { qr_code: null } : {}),
             }).eq("id", conn.id);
 
@@ -131,7 +140,18 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
             const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
             for (const c of list) {
               const jid = String(c.remoteJid ?? c.id ?? c.jid ?? "");
-              if (!jid || jid.endsWith("@g.us")) continue;
+              if (!jid) continue;
+              if (jid.endsWith("@g.us")) {
+                await supabaseAdmin.from("whatsapp_groups").upsert({
+                  user_id: conn.user_id,
+                  connection_id: conn.id,
+                  jid,
+                  subject: String(c.pushName ?? c.name ?? c.notify ?? "Grupo"),
+                  picture_url: c.profilePicUrl ?? null,
+                  metadata: { instance_id: c.instanceId ?? null },
+                }, { onConflict: "connection_id,jid" });
+                continue;
+              }
               const phone = digits(jid.split("@")[0]);
               if (!phone) continue;
               const { data: exists } = await supabaseAdmin.from("contacts").select("id")
@@ -141,6 +161,36 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                   user_id: conn.user_id,
                   name: String(c.pushName ?? c.name ?? c.notify ?? phone),
                   phone, external_source: "whatsapp", external_id: jid,
+                });
+              }
+            }
+          } else if (event === "chats.upsert" || event === "CHATS_UPSERT" || event === "groups.upsert" || event === "GROUPS_UPSERT") {
+            const list: any[] = Array.isArray(data) ? data : (data.chats ?? data.groups ?? data.data ?? []);
+            const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
+            for (const ch of list) {
+              const jid = String(ch.remoteJid ?? ch.id ?? ch.jid ?? "");
+              if (!jid || jid === "status@broadcast" || jid.endsWith("@newsletter")) continue;
+              if (jid.endsWith("@g.us")) {
+                await supabaseAdmin.from("whatsapp_groups").upsert({
+                  user_id: conn.user_id,
+                  connection_id: conn.id,
+                  jid,
+                  subject: String(ch.subject ?? ch.pushName ?? ch.name ?? "Grupo"),
+                  participants_count: Array.isArray(ch.participants) ? ch.participants.length : (ch.size ?? 0),
+                  owner: ch.owner ?? null,
+                  picture_url: ch.pictureUrl ?? ch.profilePicUrl ?? null,
+                  metadata: { instance_id: ch.instanceId ?? null },
+                }, { onConflict: "connection_id,jid" });
+                continue;
+              }
+              const phone = digits(jid.split("@")[0]);
+              if (!phone || phone.length < 8 || phone.length > 15) continue;
+              const { data: existingConv } = await supabaseAdmin.from("conversations").select("id")
+                .eq("user_id", conn.user_id).eq("connection_id", conn.id).eq("title", phone).maybeSingle();
+              if (!existingConv) {
+                await supabaseAdmin.from("conversations").insert({
+                  user_id: conn.user_id, connection_id: conn.id, title: phone,
+                  last_message_at: new Date().toISOString(),
                 });
               }
             }

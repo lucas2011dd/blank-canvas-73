@@ -8,7 +8,10 @@ function instanceNameFor(id: string) {
 }
 
 function webhookUrl(instanceName: string): string | undefined {
-  const base = process.env.APP_PUBLIC_URL;
+  const previewHost = process.env.LOVABLE_PREVIEW_HOST;
+  const base = process.env.WHATSAPP_WEBHOOK_PUBLIC_URL
+    ?? (previewHost ? `https://${previewHost}` : undefined)
+    ?? process.env.APP_PUBLIC_URL;
   if (!base) return undefined;
   return `${base.replace(/\/$/, "")}/api/public/wa/webhook/${instanceName}`;
 }
