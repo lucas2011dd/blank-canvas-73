@@ -142,7 +142,18 @@ function Page() {
                   <TableCell className="text-muted-foreground">{c.phone || "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{c.email || "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{c.company || "—"}</TableCell>
-                  <TableCell><Button size="icon" variant="ghost" onClick={() => del.mutate({ data: { id: c.id } })}><Trash2 className="h-4 w-4 text-destructive" /></Button></TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      {c.phone && (
+                        <Button size="icon" variant="ghost" title="Enviar WhatsApp" onClick={() => openWhatsapp(c.phone!)}>
+                          <MessageCircle className="h-4 w-4 text-primary" />
+                        </Button>
+                      )}
+                      <Button size="icon" variant="ghost" onClick={() => del.mutate({ data: { id: c.id } })}>
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
