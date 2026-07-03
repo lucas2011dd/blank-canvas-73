@@ -105,10 +105,11 @@ function ThemeTab() {
 function IntegrationsTab() {
   const { user } = useAuth();
   const qc = useQueryClient();
-  const { data: status, refetch } = useSuspenseQuery(queryOptions({
+  const { data: status = { connected: false, expiresAt: null }, refetch } = useQuery({
     queryKey: ["google-status"],
     queryFn: () => googleConnectionStatus(),
-  }));
+    retry: false,
+  });
   const imp = useMutation({
     mutationFn: useServerFn(importGoogleContacts),
     onSuccess: (r: any) => { toast.success(`${r.imported} contato(s) importado(s) do Google`); qc.invalidateQueries({ queryKey: ["contacts"] }); },
