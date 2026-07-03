@@ -256,8 +256,20 @@ export const evolution = {
     return call(`/instance/connect/${encodeURIComponent(instanceName)}`);
   },
 
-  async state(instanceName: string): Promise<{ instance?: { state?: "open" | "connecting" | "close" } }> {
+  async state(instanceName: string): Promise<any> {
     return call(`/instance/connectionState/${encodeURIComponent(instanceName)}`);
+  },
+
+  async canReadSession(instanceName: string): Promise<boolean> {
+    try {
+      await call<any>(`/chat/findChats/${encodeURIComponent(instanceName)}`, {
+        method: "POST",
+        body: {},
+      });
+      return true;
+    } catch {
+      return false;
+    }
   },
 
   async logout(instanceName: string) {
@@ -337,8 +349,69 @@ export const evolution = {
   },
 };
 
-export function evolutionStateToStatus(state?: string): "online" | "offline" | "connecting" {
-  if (state === "open") return "online";
-  if (state === "connecting") return "connecting";
+export type EvolutionConnectionStatus = "online" | "offline" | "connecting";
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+export function extractEvolutionConnectionState(source: unknown): string | undefined {
+  const s: any = source;
+  return firstString(
+    s?.instance?.state,
+    s?.instance?.status,
+    s?.instance?.connectionStatus,
+    s?.data?.instance?.state,
+    s?.data?.instance?.status,
+    s?.data?.state,
+    s?.data?.status,
+    s?.state,
+    s?.status,
+    s?.connection,
+    s?.connectionStatus,
+  );
+}
+
+export function evolutionStateToStatus(state?: string): EvolutionConnectionStatus {
+  const normalized = String(state ?? "").trim().toLowerCase();
+  if (!normalized) return "offline";
+  if (["open", "online", "connected", "authenticated", "ready"].includes(normalized)) return "online";
+  if (
+    ["close", "closed", "offline", "disconnected", "logout", "logged_out", "device_removed"].includes(normalized) ||
+    normalized.includes("logged") ||
+    normalized.includes("removed") ||
+    normalized.includes("disconnect") ||
+    normalized.includes("close")
+  ) return "offline";
+  if (
+    ["connecting", "qr", "qrcode", "pairing"].includes(normalized) ||
+    normalized.includes("connect") ||
+    normalized.includes("qr") ||
+    normalized.includes("pair")
+  ) return "connecting";
   return "offline";
+}
+
+export async function resolveEvolutionStatus(instanceName: string): Promise<{
+  status: EvolutionConnectionStatus;
+  state?: string;
+  usable: boolean;
+}> {
+  let state: string | undefined;
+  try {
+    const rawState = await evolution.state(instanceName);
+    state = extractEvolutionConnectionState(rawState);
+    const status = evolutionStateToStatus(state);
+    if (status === "online") return { status, state, usable: true };
+  } catch {
+    // cai para o probe abaixo: algumas instâncias respondem mal ao
+    // connectionState, mas aceitam operações reais de chat/grupo.
+  }
+
+  const usable = await evolution.canReadSession(instanceName);
+  if (usable) return { status: "online", state: state ?? "usable_session", usable };
+  return { status: evolutionStateToStatus(state), state, usable };
 }
