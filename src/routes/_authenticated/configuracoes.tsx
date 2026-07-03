@@ -11,8 +11,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { createApiKey, getMyProfile, listApiKeys, revokeApiKey, updateMyProfile } from "@/lib/settings.functions";
+import { disconnectGoogle, exportContactsToGoogle, googleConnectionStatus, importGoogleContacts } from "@/lib/google.functions";
 import { useTheme } from "@/components/theme-provider";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
 
 const profileQ = queryOptions({ queryKey: ["profile"], queryFn: () => getMyProfile() });
 const keysQ = queryOptions({ queryKey: ["api-keys"], queryFn: () => listApiKeys() });
