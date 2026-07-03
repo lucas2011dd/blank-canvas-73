@@ -478,8 +478,6 @@ export function payloadIndicatesPairingLost(source: unknown): boolean {
     haystack.includes("logged_out") ||
     haystack.includes("logged out") ||
     haystack.includes("logout") ||
-    haystack.includes("not_connected") ||
-    haystack.includes("not connected") ||
     haystack.includes("unpaired") ||
     haystack.includes("statusreason\":401") ||
     haystack.includes("statusreason:401") ||
@@ -560,8 +558,10 @@ export async function reconnectEvolutionSession(
   const before = await resolveEvolutionStatus(instanceName).catch(() => null);
   if (before?.status === "online") return { ...before, restarted: false };
 
-  // Reconexão preservando sessão: usa restart/reload da instância, nunca /connect.
-  // /connect pode abrir novo QR em Baileys e invalidar sessões ainda recuperáveis.
+  // Reconexão preservando sessão: primeiro usa restart/reload. Se a Evolution
+  // estiver apenas com socket fechado ("not connected"), um /connect pode só
+  // reabrir a sessão salva; se vier QR, o chamador/webhook não deve persistir
+  // esse QR durante automações em andamento.
   // /instance/restart retorna 400 quando a sessão não está conectada.
   // Isso é esperado após queda total — ignoramos e deixamos o chamador decidir
   // se aciona /connect para gerar novo QR.
@@ -573,6 +573,9 @@ export async function reconnectEvolutionSession(
     latest = await resolveEvolutionStatus(instanceName).catch(() => latest);
     if (latest.status === "online") return { ...latest, restarted: true };
     if (payloadIndicatesPairingLost(latest.state)) break;
+    if (attempt === 0) {
+      await evolution.connect(instanceName).catch(() => undefined);
+    }
   }
 
   return { ...latest, restarted: true };
