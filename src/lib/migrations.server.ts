@@ -119,9 +119,15 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   const instance = conn.metadata?.evolution_instance ?? instanceNameFor(mig.connection_id);
 
   const tryReconnect = async () => {
+    // Cooldown de 5 min por instância: reconectar toda hora é interpretado
+    // pelo WhatsApp como comportamento suspeito e força device_removed.
+    const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 5 * 60_000);
+    const cache: Map<string, number> = ((globalThis as any).__migrationReconnectAt ??= new Map());
+    const last = cache.get(instance) ?? 0;
+    if (Date.now() - last < cooldownMs) return false;
+    cache.set(instance, Date.now());
     // Reconecta preservando a sessão: restart/reload da instância, nunca /connect.
-    // /connect abre fluxo de QR em algumas instalações e pode derrubar sessões válidas.
-    const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
+    const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_500 }).catch(() => null);
     if (recovered) {
       await supabase.from("connections").update({
         status: recovered.status,
