@@ -284,36 +284,32 @@ export const deleteConnection = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     // 1) Descobre o nome REAL da instância na Evolution (pode ter sido adotada).
     const { data: existing } = await context.supabase
-      .from("connections").select("metadata,provider")
+      .from("connections").select("id,metadata,provider")
       .eq("id", data.id).eq("user_id", context.userId).maybeSingle();
     if (!existing) throw new Error("Conexão não encontrada");
 
-    const meta = (existing.metadata as Record<string, unknown> | null) ?? {};
-    const name = typeof meta.evolution_instance === "string" ? meta.evolution_instance : instanceNameFor(data.id);
+    const name = instanceNameFromConnection(existing);
 
-    // 1) Apaga PRIMEIRO no ConnectHub — se a Evolution estiver travada,
-    //    o vínculo local desaparece na hora. FKs são ON DELETE CASCADE.
-    const { error } = await context.supabase.from("connections").delete().eq("id", data.id).eq("user_id", context.userId);
-    if (error) throw new Error(error.message);
+    // 1) Apaga PRIMEIRO e manualmente no ConnectHub. Não dependemos de FK
+    //    cascade nem da Evolution responder; isso remove instância congelada
+    //    da tela mesmo quando o Manager não consegue apagar.
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const connecthubRemoved = await hardDeleteConnectionRows(supabaseAdmin, context.userId, [data.id]);
 
     // 2) Best-effort: derruba na Evolution em segundo plano com timeout curto.
-    let removedFromEvolution = false;
+    let removedFromEvolution = true;
     if (!data.keepEvolution && existing.provider === "whatsapp") {
       try {
         const { evolution } = await import("@/lib/evolution.server");
-        const withTimeout = <T,>(p: Promise<T>, ms = 4000) =>
-          Promise.race([p, new Promise<T>((_, r) => setTimeout(() => r(new Error("timeout")), ms))]);
-        await withTimeout(evolution.logout(name)).catch(() => null);
-        await withTimeout(evolution.remove(name)).catch(() => null);
-        removedFromEvolution = true;
+        removedFromEvolution = await removeEvolutionBestEffort(evolution, name);
       } catch { /* ignore */ }
     }
 
     await context.supabase.from("audit_logs").insert({
       user_id: context.userId, action: "delete", entity: "connection", entity_id: data.id,
-      metadata: { evolution_instance: name, removedFromEvolution },
+      metadata: { evolution_instance: name, removedFromEvolution, connecthubRemoved },
     });
-    return { ok: true, removedFromEvolution, evolutionInstance: name };
+    return { ok: true, removedFromEvolution, connecthubRemoved, evolutionInstance: name };
   });
 
 // ------------------------------------------------------------------
