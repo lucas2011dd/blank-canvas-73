@@ -11,6 +11,23 @@ function jitter(min: number, max: number) {
   return Math.floor(min + Math.random() * (max - min + 1));
 }
 
+function digits(value: unknown): string {
+  return String(value ?? "").replace(/\D/g, "");
+}
+
+function participantPhone(p: any): string {
+  return digits(
+    p?.phoneNumber ??
+    p?.phone_number ??
+    p?.number ??
+    p?.participantPn ??
+    p?.pn ??
+    p?.jid ??
+    p?.id ??
+    "",
+  );
+}
+
 export async function processGroupMigrationBatch(supabase: any, migrationId: string, userIdScope?: string) {
   let q = supabase.from("group_migrations").select("*").eq("id", migrationId);
   if (userIdScope) q = q.eq("user_id", userIdScope);
@@ -55,15 +72,14 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   const errors: Record<string, string> = {};
 
   try {
-    // Evolution v2 aceita telefones puros, mas alguns builds só respeitam JID completo.
-    // Enviar como JID garante o comportamento consistente.
-    const jids = phones.map((p: string) => `${p}@s.whatsapp.net`);
-    const res = await evolution.addGroupParticipants(instance, mig.target_group_jid, jids);
+    // A documentação da Evolution pede telefones puros com DDI. Em grupos
+    // atuais ela pode retornar participantes como @lid, mas o telefone real
+    // fica em phoneNumber; por isso persistimos e enviamos apenas o número.
+    const res = await evolution.addGroupParticipants(instance, mig.target_group_jid, phones);
     const list = Array.isArray(res) ? res : (res?.participants ?? res?.data ?? []);
     const byPhone: Record<string, any> = {};
     for (const item of list) {
-      const jid = String(item?.jid ?? item?.id ?? item?.number ?? "");
-      const phone = jid.split("@")[0]?.replace(/\D/g, "") ?? "";
+      const phone = participantPhone(item);
       if (phone) byPhone[phone] = item;
     }
 
@@ -74,8 +90,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     try {
       const parts = await evolution.groupParticipants(instance, mig.target_group_jid);
       joinedSet = new Set(parts.map((p: any) => {
-        const j = String(p?.id ?? p?.jid ?? "");
-        return j.split("@")[0]?.replace(/\D/g, "") ?? "";
+        return participantPhone(p);
       }).filter(Boolean));
     } catch { /* fallback: usa apenas o retorno da chamada */ }
 
