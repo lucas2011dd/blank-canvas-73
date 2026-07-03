@@ -81,11 +81,7 @@ export async function extractQrImage(source: unknown): Promise<string | null> {
   ]);
   if (!code) return null;
 
-  return QRCode.toDataURL(code, {
-    errorCorrectionLevel: "M",
-    margin: 2,
-    width: 360,
-  });
+  return qrToSvgDataUrl(code);
 }
 
 export const evolution = {
