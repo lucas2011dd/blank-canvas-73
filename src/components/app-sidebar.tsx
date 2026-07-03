@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   Megaphone,
   CalendarClock,
+  UsersRound,
 } from "lucide-react";
 import {
   Sidebar,
@@ -37,6 +38,7 @@ const main = [
   { title: "Chat", url: "/chat", icon: MessageSquare },
   { title: "Contatos", url: "/contatos", icon: Users },
   { title: "Disparos", url: "/broadcasts", icon: Megaphone },
+  { title: "Migração de Grupos", url: "/migracao-grupos", icon: UsersRound },
   { title: "Agendamentos", url: "/agendamentos", icon: CalendarClock },
   { title: "Ferramentas", url: "/ferramentas", icon: Wrench },
 ];
