@@ -495,6 +495,10 @@ export function isTransientEvolutionError(error: unknown): boolean {
   return (
     haystack.includes("connection closed") ||
     haystack.includes("connection close") ||
+    haystack.includes("instance is not connected") ||
+    haystack.includes("the instance is not connected") ||
+    haystack.includes("not_connected") ||
+    haystack.includes("not connected") ||
     haystack.includes("timed out") ||
     haystack.includes("timeout") ||
     haystack.includes("socket") ||

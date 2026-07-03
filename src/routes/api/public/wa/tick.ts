@@ -5,6 +5,7 @@
 // Protegido por TICK_SECRET. O segredo é aceito APENAS via header
 // para não vazar em logs de proxy/CDN/referrer.
 import { createFileRoute } from "@tanstack/react-router";
+import { buildWebhookUrl } from "@/lib/webhook-url";
 
 // Rate limit simples em memória (por IP): 60 req/min.
 const RATE: Map<string, { count: number; reset: number }> = (globalThis as any).__tickRate ??= new Map();
@@ -14,20 +15,6 @@ function rateLimited(ip: string): boolean {
   if (!bucket || bucket.reset < now) { RATE.set(ip, { count: 1, reset: now + 60_000 }); return false; }
   bucket.count++;
   return bucket.count > 60;
-}
-
-function webhookUrl(instanceName: string): string | undefined {
-  const previewHost = process.env.LOVABLE_PREVIEW_HOST;
-  const previewBase = previewHost ? `https://${previewHost}` : undefined;
-  const configuredBase = process.env.WHATSAPP_WEBHOOK_PUBLIC_URL ?? process.env.APP_PUBLIC_URL;
-  // Em preview, a URL project--*.lovable.app ainda não existe e responde 404.
-  // Prefira o host id-preview--* para a Evolution entregar webhooks de verdade.
-  const configuredPointsToUnpublishedHost = /\/\/project--[^/]+\.lovable\.app/i.test(configuredBase ?? "");
-  const base = configuredPointsToUnpublishedHost && previewBase
-    ? previewBase
-    : (configuredBase ?? previewBase);
-  if (!base) return undefined;
-  return `${base.replace(/\/$/, "")}/api/public/wa/webhook/${instanceName}`;
 }
 
 export const Route = createFileRoute("/api/public/wa/tick")({
@@ -59,7 +46,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const { isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
         for (const conn of webhookConns ?? []) {
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
-          const wh = webhookUrl(instance);
+          const wh = buildWebhookUrl(instance);
           if (wh) await evolution.setWebhook(instance, wh).catch(() => null);
           try {
             const resolved = await resolveEvolutionStatus(instance);
