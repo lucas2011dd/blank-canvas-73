@@ -63,6 +63,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             if (realStatus !== conn.status) {
               await supabaseAdmin.from("connections").update({
                 status: realStatus,
+                ...(realStatus === "online" ? { qr_code: null } : {}),
                 last_sync_at: new Date().toISOString(),
                 metadata: {
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
