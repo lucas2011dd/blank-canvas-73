@@ -30,9 +30,30 @@ export const Route = createFileRoute("/_authenticated/contatos")({
 
 function Page() {
   const { data } = useSuspenseQuery(q);
+  const { data: connections } = useSuspenseQuery(connQ);
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
+
+  const whatsapps = connections.filter((c: any) => c.provider === "whatsapp");
+
+  useEffect(() => {
+    const channel = supabase.channel("contacts-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, () => {
+        qc.invalidateQueries({ queryKey: ["contacts"] });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc]);
+
+  function openWhatsapp(phone: string) {
+    const clean = phone.replace(/\D/g, "");
+    if (!clean) return toast.error("Contato sem telefone");
+    const online = whatsapps.find((c: any) => c.status === "online") ?? whatsapps[0];
+    if (!online) return toast.error("Nenhuma conexão WhatsApp configurada");
+    navigate({ to: "/chat", search: { phone: clean, connectionId: online.id } });
+  }
 
   const create = useMutation({
     mutationFn: useServerFn(createContact),
