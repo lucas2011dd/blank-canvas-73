@@ -95,7 +95,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     // fica em phoneNumber; por isso persistimos e enviamos apenas o número.
     const phonesToSend = phones.map(sendPhoneFor);
     const res = await evolution.addGroupParticipants(instance, mig.target_group_jid, phonesToSend);
-    const list = Array.isArray(res) ? res : (res?.participants ?? res?.data ?? []);
+    const list = Array.isArray(res) ? res : (res?.updateParticipants ?? res?.participants ?? res?.data ?? []);
     const byPhone: Record<string, any> = {};
     for (const item of list) {
       const phone = participantPhone(item);
