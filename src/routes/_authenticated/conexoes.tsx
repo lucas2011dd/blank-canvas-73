@@ -16,7 +16,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   createConnection, deleteConnection, disconnectConnection, listConnections,
   reconnectConnection, refreshConnectionStatus, syncWhatsappConnection,
-  listWhatsappGroups, toggleGroupMonitored,
+  listWhatsappGroups, toggleGroupMonitored, pollWhatsappQr,
 } from "@/lib/connections.functions";
 import { Checkbox } from "@/components/ui/checkbox";
 
@@ -141,10 +141,9 @@ function Page() {
     onError: (e) => toast.error(e.message),
   });
   const refresh = useServerFn(refreshConnectionStatus);
+  const pollQr = useServerFn(pollWhatsappQr);
 
-  // Auto-abre o QR quando ele chega via webhook/realtime para uma conexão
-  // que o usuário acabou de pedir para (re)conectar. Assim o QR só existe
-  // no navegador de quem está usando — a VPS não precisa exibir nada extra.
+  // Auto-abre o QR quando ele chega (via webhook/realtime OU via polling).
   useEffect(() => {
     if (awaitingQr.size === 0) return;
     for (const c of data as any[]) {
@@ -157,6 +156,35 @@ function Page() {
       }
     }
   }, [data, awaitingQr]);
+
+  // Enquanto houver alguma conexão aguardando QR, faz polling curto
+  // direto na Evolution — assim não dependemos da fila de webhook drenar.
+  useEffect(() => {
+    if (awaitingQr.size === 0) return;
+    let stopped = false;
+    const ids = Array.from(awaitingQr);
+    const tick = async () => {
+      if (stopped) return;
+      for (const id of ids) {
+        try {
+          const r = await pollQr({ data: { id } });
+          if (r?.qr) { setQr(r.qr); clearAwaiting(id); }
+          else if (r?.status === "online") clearAwaiting(id);
+        } catch { /* segue tentando */ }
+      }
+      qc.invalidateQueries({ queryKey: ["connections"] });
+    };
+    tick();
+    const t = setInterval(tick, 2000);
+    // Timeout de segurança — para depois de 90s.
+    const stop = setTimeout(() => {
+      stopped = true;
+      clearInterval(t);
+      ids.forEach(clearAwaiting);
+    }, 90_000);
+    return () => { stopped = true; clearInterval(t); clearTimeout(stop); };
+  }, [awaitingQr, pollQr, qc]);
+
 
   // Poll status real para conexões WhatsApp ativas/em pareamento; se o celular
   // remover o aparelho e o webhook atrasar, a tela corrige sozinha.

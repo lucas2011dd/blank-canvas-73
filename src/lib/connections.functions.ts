@@ -82,6 +82,53 @@ async function getFreshWhatsappQr(
 }
 
 
+// Puxa o QR direto da Evolution (instanceInfo + connect) e persiste em
+// connections.qr_code. O cliente chama isto em polling curto enquanto o
+// usuário está aguardando o QR — não depende da fila de webhook drenar.
+export const pollWhatsappQr = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { evolution, extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const { data: existing } = await context.supabase
+      .from("connections").select("id,status,qr_code,metadata")
+      .eq("id", data.id).eq("user_id", context.userId).maybeSingle();
+    if (!existing) throw new Error("Conexão não encontrada");
+    if (existing.status === "online") return { status: "online" as const, qr: null };
+    if (existing.qr_code) return { status: existing.status, qr: existing.qr_code };
+
+    const meta = (existing.metadata as Record<string, unknown> | null) ?? {};
+    const name = typeof meta.evolution_instance === "string"
+      ? meta.evolution_instance
+      : instanceNameFor(data.id);
+
+    // 1) Tenta extrair de instanceInfo (não gera novo QR na Evolution).
+    let qr: string | null = null;
+    const info = await evolution.instanceInfo(name).catch(() => null);
+    qr = await extractQrImage(info);
+
+    // 2) Se nada, uma única chamada a /connect (Evolution só regenera se precisar).
+    if (!qr) {
+      const connected = await evolution.connect(name).catch(() => null);
+      qr = await extractQrImage(connected);
+    }
+
+    // 3) Ainda nada — reporta status atual sem forçar mais nada.
+    if (!qr) {
+      const resolved = await resolveEvolutionStatus(name).catch(() => null);
+      const status = resolved?.status ?? existing.status;
+      return { status, qr: null };
+    }
+
+    await context.supabase.from("connections").update({
+      qr_code: qr, status: "connecting",
+      last_sync_at: new Date().toISOString(),
+      metadata: { ...meta, evolution_instance: name, evolution_state: "qr_required" },
+    }).eq("id", data.id).eq("user_id", context.userId);
+
+    return { status: "connecting" as const, qr };
+  });
+
 export const listConnections = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
