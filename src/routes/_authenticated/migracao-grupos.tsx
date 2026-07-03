@@ -245,11 +245,12 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
           </div>
           <div>
             <Label className="text-xs">Delay min (s)</Label>
-            <Input type="number" min={75} value={minDelay} onChange={(e) => setMinDelay(Math.max(75, Number(e.target.value) || 75))} />
+            <Input type="number" min={1} value={minDelay} onChange={(e) => setMinDelay(Math.max(1, Number(e.target.value) || 1))} />
           </div>
           <div>
             <Label className="text-xs">Delay max (s)</Label>
-            <Input type="number" min={180} value={maxDelay} onChange={(e) => setMaxDelay(Math.max(180, Number(e.target.value) || 180))} />
+            <Input type="number" min={1} value={maxDelay} onChange={(e) => setMaxDelay(Math.max(1, Number(e.target.value) || 1))} />
+
           </div>
         </div>
 
