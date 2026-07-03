@@ -192,7 +192,6 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
             next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
             last_error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
           } as any).eq("id", t.id);
-          results.push({ id: t.id, ok: false, error: "reconnecting" });
           break;
         }
         await context.supabase.from("broadcast_targets").update({
