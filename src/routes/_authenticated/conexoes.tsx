@@ -115,7 +115,16 @@ function Page() {
   });
   const del = useMutation({
     mutationFn: useServerFn(deleteConnection),
-    onSuccess: () => { toast.success("Removida"); qc.invalidateQueries({ queryKey: ["connections"] }); },
+    onSuccess: (r: any) => {
+      if (r?.removedFromEvolution === false) {
+        toast.warning("Removi do ConnectHub; a Evolution ainda recusou apagar a instância travada.");
+      } else {
+        toast.success("Removida");
+      }
+      qc.invalidateQueries({ queryKey: ["connections"] });
+      qc.invalidateQueries({ queryKey: ["evolution-instances"] });
+    },
+    onError: (e) => toast.error(e.message),
   });
   const reconnect = useMutation({
     mutationFn: useServerFn(reconnectConnection),
@@ -367,11 +376,14 @@ function Page() {
                     <AlertDialogContent>
                       <AlertDialogHeader>
                         <AlertDialogTitle>Excluir conexão?</AlertDialogTitle>
-                        <AlertDialogDescription>Esta ação não pode ser desfeita.</AlertDialogDescription>
+                          <AlertDialogDescription>
+                            Esta ação apaga primeiro no ConnectHub. Se a Evolution estiver travada, use "Forçar só ConnectHub" para sumir da tela sem esperar o servidor WhatsApp.
+                          </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
                         <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => del.mutate({ data: { id: c.id } })}>Excluir</AlertDialogAction>
+                          <AlertDialogAction onClick={() => del.mutate({ data: { id: c.id, keepEvolution: true } })}>Forçar só ConnectHub</AlertDialogAction>
+                          <AlertDialogAction onClick={() => del.mutate({ data: { id: c.id } })}>Excluir tudo</AlertDialogAction>
                       </AlertDialogFooter>
                     </AlertDialogContent>
                   </AlertDialog>
@@ -439,8 +451,9 @@ function AdoptDialog({ open, onClose, onQr, defaultLabel }: { open: boolean; onC
 
   const remove = useMutation({
     mutationFn: removeFn,
-    onSuccess: () => {
-      toast.success("Instância removida da Evolution.");
+    onSuccess: (r: any) => {
+      if (r?.removedFromEvolution === false) toast.warning("Vínculo local limpo; a Evolution ainda recusou apagar essa instância.");
+      else toast.success("Instância removida da Evolution.");
       qc.invalidateQueries({ queryKey: ["evolution-instances"] });
       qc.invalidateQueries({ queryKey: ["connections"] });
     },

@@ -342,11 +342,36 @@ export const evolution = {
   },
 
   async logout(instanceName: string) {
-    return call(`/instance/logout/${encodeURIComponent(instanceName)}`, { method: "DELETE" });
+    const path = `/instance/logout/${encodeURIComponent(instanceName)}`;
+    let lastError: unknown = null;
+    for (const method of ["DELETE", "POST", "GET"] as const) {
+      try {
+        return await call(path, { method, timeoutMs: 5_000 });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Falha ao desconectar instância");
   },
 
   async remove(instanceName: string) {
-    return call(`/instance/delete/${encodeURIComponent(instanceName)}`, { method: "DELETE" });
+    const encoded = encodeURIComponent(instanceName);
+    const attempts: Array<{ path: string; method: "DELETE" | "POST" | "GET" }> = [
+      { path: `/instance/delete/${encoded}`, method: "DELETE" },
+      { path: `/instance/delete/${encoded}`, method: "POST" },
+      { path: `/instance/delete/${encoded}`, method: "GET" },
+      { path: `/instance/remove/${encoded}`, method: "DELETE" },
+      { path: `/instance/logout/${encoded}`, method: "DELETE" },
+    ];
+    let lastError: unknown = null;
+    for (const attempt of attempts) {
+      try {
+        return await call(attempt.path, { method: attempt.method, timeoutMs: 5_000 });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Falha ao apagar instância");
   },
 
   async sendText(instanceName: string, number: string, text: string) {
