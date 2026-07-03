@@ -6,19 +6,31 @@
 // (ou, se não definido, à própria EVOLUTION_API_KEY — que a Evolution envia).
 import { createFileRoute } from "@tanstack/react-router";
 
-function stateNeedsQr(state: unknown): boolean {
-  const s = String(state ?? "").trim().toLowerCase();
-  return (
-    s.includes("qr") ||
-    s.includes("pair") ||
-    s.includes("not_connected") ||
-    s.includes("not connected") ||
-    s.includes("unpaired") ||
-    s.includes("logged") ||
-    s.includes("logout") ||
-    s.includes("removed") ||
-    s.includes("401")
-  );
+const ALWAYS_FAST_ACK_EVENTS = new Set([
+  "contacts.upsert",
+  "CONTACTS_UPSERT",
+  "contacts.update",
+  "CONTACTS_UPDATE",
+  "chats.upsert",
+  "CHATS_UPSERT",
+  "chats.update",
+  "CHATS_UPDATE",
+  "groups.upsert",
+  "GROUPS_UPSERT",
+  "group-participants.update",
+  "GROUP_PARTICIPANTS_UPDATE",
+  "messages.set",
+  "MESSAGES_SET",
+  "messages.update",
+  "MESSAGES_UPDATE",
+  "presence.update",
+  "PRESENCE_UPDATE",
+]);
+
+function hasBulkMessagePayload(data: unknown, rawLength: number): boolean {
+  if (rawLength > 100_000) return true;
+  const d: any = data;
+  return Array.isArray(d) || Array.isArray(d?.messages) || Array.isArray(d?.data) || Array.isArray(d?.message);
 }
 
 export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
@@ -36,9 +48,23 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
           return new Response("unauthorized", { status: 401 });
         }
 
+        let raw = "";
         let payload: any = null;
-        try { payload = await request.json(); } catch { /* ignore */ }
+        try {
+          raw = await request.text();
+          payload = raw ? JSON.parse(raw) : null;
+        } catch { /* ignore */ }
         if (!payload) return new Response("bad request", { status: 400 });
+
+        const event: string = payload.event ?? "";
+        const data = payload.data ?? {};
+
+        // ACK imediato para eventos volumosos/ruidosos. Eles não são
+        // necessários para a migração e, quando processados com banco dentro
+        // do webhook, prendem a fila da Evolution por 30s e derrubam a sessão.
+        if (ALWAYS_FAST_ACK_EVENTS.has(event) || ((event === "messages.upsert" || event === "MESSAGES_UPSERT") && hasBulkMessagePayload(data, raw.length))) {
+          return new Response("ok");
+        }
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
         const instanceName = params.instance;
@@ -50,9 +76,6 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
           .eq("metadata->>evolution_instance", instanceName)
           .maybeSingle();
         if (!conn) return new Response("ok"); // nada a fazer
-
-        const event: string = payload.event ?? "";
-        const data = payload.data ?? {};
 
         try {
           if (event === "connection.update" || event === "CONNECTION_UPDATE") {
@@ -71,8 +94,11 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               ...(status === "online" ? { qr_code: null, last_seen_online_at: new Date().toISOString() } : {}),
             }).eq("id", conn.id);
 
-            // Ao ficar online, dispara sincronização inicial em background e
-            // grava snapshot da sessão para reconexão silenciosa 24/7.
+            // Ao ficar online, grava snapshot da sessão. Não sincronizamos
+            // contatos/chats/grupos dentro do webhook: chamadas longas aqui
+            // fazem a Evolution aguardar 30s, acumular retries e derrubar a
+            // sessão durante migrações. A sincronização pesada fica para o
+            // tick/manual, fora do caminho crítico do webhook.
             if (status === "online") {
               const ownerJid = (data.wuid ?? data.owner ?? data.ownerJid ?? (data.instance as any)?.wuid ?? null) as string | null;
               const { persistSessionSnapshot } = await import("@/lib/session-store.server");
@@ -83,76 +109,9 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                 ownerJid,
                 extra: { last_event: event },
               }).catch(() => null);
-              (async () => {
-                try {
-                  const { evolution } = await import("@/lib/evolution.server");
-                  const [contactsRaw, chatsRaw, groupsRaw] = await Promise.all([
-                    evolution.findContacts(instanceName),
-                    evolution.findChats(instanceName),
-                    evolution.fetchAllGroups(instanceName),
-                  ]);
-                  const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
-
-                  const rows: any[] = [];
-                  for (const c of contactsRaw ?? []) {
-                    const jid = String(c.remoteJid ?? c.id ?? c.jid ?? "");
-                    if (!jid || jid.endsWith("@g.us") || jid === "status@broadcast") continue;
-                    const phone = digits(jid.split("@")[0]);
-                    if (!phone) continue;
-                    rows.push({
-                      user_id: conn.user_id,
-                      name: String(c.pushName ?? c.name ?? c.notify ?? phone),
-                      phone,
-                      external_source: "whatsapp",
-                      external_id: jid,
-                    });
-                  }
-                  if (rows.length) {
-                    const phones = Array.from(new Set(rows.map((r) => r.phone)));
-                    const { data: existing } = await supabaseAdmin
-                      .from("contacts").select("phone")
-                      .eq("user_id", conn.user_id).in("phone", phones);
-                    const has = new Set((existing ?? []).map((r: any) => r.phone));
-                    const toInsert = rows.filter((r) => !has.has(r.phone));
-                    if (toInsert.length) await supabaseAdmin.from("contacts").insert(toInsert);
-                  }
-
-                  for (const ch of chatsRaw ?? []) {
-                    const jid = String(ch.remoteJid ?? ch.id ?? ch.jid ?? "");
-                    if (!jid || jid.endsWith("@g.us") || jid.endsWith("@lid") || jid.endsWith("@newsletter") || jid === "status@broadcast") continue;
-                    if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@c.us") && jid.includes("@")) continue;
-                    const phone = digits(jid.split("@")[0]);
-                    if (!phone || phone.length < 8 || phone.length > 15) continue;
-                    const { data: exists } = await supabaseAdmin.from("conversations").select("id")
-                      .eq("user_id", conn.user_id).eq("connection_id", conn.id).eq("title", phone).maybeSingle();
-                    if (!exists) {
-                      await supabaseAdmin.from("conversations").insert({
-                        user_id: conn.user_id, connection_id: conn.id, title: phone,
-                        last_message_at: new Date().toISOString(),
-                      });
-                    }
-                  }
-
-                  for (const g of groupsRaw ?? []) {
-                    const jid = String(g.id ?? g.remoteJid ?? "");
-                    if (!jid.endsWith("@g.us")) continue;
-                    await supabaseAdmin.from("whatsapp_groups").upsert({
-                      user_id: conn.user_id,
-                      connection_id: conn.id,
-                      jid,
-                      subject: String(g.subject ?? g.name ?? "Grupo"),
-                      description: g.desc ?? g.description ?? null,
-                      participants_count: Array.isArray(g.participants) ? g.participants.length : (g.size ?? 0),
-                      owner: g.owner ?? null,
-                      picture_url: g.pictureUrl ?? null,
-                    }, { onConflict: "connection_id,jid" });
-                  }
-                } catch (e) {
-                  console.error("[wa webhook] auto-sync failed", e);
-                }
-              })();
             }
           } else if (event === "qrcode.updated" || event === "QRCODE_UPDATED") {
+            if (conn.status === "online") return new Response("ok");
             const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
               supabaseAdmin.from("broadcasts")
                 .select("id", { count: "exact", head: true })
@@ -183,39 +142,17 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               return new Response("ok");
             }
 
-            const { extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
-            const resolved = await resolveEvolutionStatus(instanceName).catch(() => null);
-            if (resolved?.status === "online") {
-              await supabaseAdmin.from("connections").update({
-                status: "online",
-                qr_code: null,
-                last_sync_at: new Date().toISOString(),
-                metadata: {
-                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
-                  evolution_instance: instanceName,
-                  evolution_state: resolved.state ?? "online",
-                },
-              }).eq("id", conn.id);
-              return new Response("ok");
-            }
-
-            // Um QR atrasado/transitório não deve derrubar uma sessão que o
-            // ConnectHub já conhece como online quando a Evolution não confirma
-            // o estado atual. Só trocamos para QR quando a checagem real responde.
-            if (conn.status === "online" && (!resolved || (resolved.status === "connecting" && !stateNeedsQr(resolved.state)))) {
-              return new Response("ok");
-            }
-
+            const { extractQrImage } = await import("@/lib/evolution.server");
             const qrImage = await extractQrImage(data);
             if (qrImage) {
               await supabaseAdmin.from("connections").update({
                 qr_code: qrImage,
-                status: resolved?.status ?? "connecting",
+                status: "connecting",
                 last_sync_at: new Date().toISOString(),
                 metadata: {
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
                   evolution_instance: instanceName,
-                  evolution_state: resolved?.state ?? "qr_required",
+                  evolution_state: "qr_required",
                   disconnected_at: new Date().toISOString(),
                 },
               }).eq("id", conn.id);

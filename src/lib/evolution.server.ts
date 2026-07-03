@@ -120,8 +120,6 @@ function webhookConfig(url: string, key: string) {
     "MESSAGES_UPSERT",
     "CONNECTION_UPDATE",
     "QRCODE_UPDATED",
-    "GROUPS_UPSERT",
-    "GROUP_PARTICIPANTS_UPDATE",
   ];
   return {
     enabled: true,
@@ -360,12 +358,18 @@ export const evolution = {
 
   async setWebhook(instanceName: string, url: string) {
     const { key } = env();
-    return call(`/webhook/set/${encodeURIComponent(instanceName)}`, {
-      method: "POST",
-      body: {
-        webhook: webhookConfig(url, key),
-      },
-    }).catch(() => null);
+    const config = webhookConfig(url, key);
+    try {
+      return await call(`/webhook/set/${encodeURIComponent(instanceName)}`, {
+        method: "POST",
+        body: { webhook: config },
+      });
+    } catch {
+      return call(`/webhook/set/${encodeURIComponent(instanceName)}`, {
+        method: "POST",
+        body: config,
+      }).catch(() => null);
+    }
   },
 
   async setSettings(instanceName: string) {
