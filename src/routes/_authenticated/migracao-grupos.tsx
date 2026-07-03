@@ -161,6 +161,8 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
   const [skipSelf, setSkipSelf] = useState(true);
   const [shuffleOrder, setShuffleOrder] = useState(true);
   const [maxParticipants, setMaxParticipants] = useState<number | "">("");
+  const [filterStates, setFilterStates] = useState<string[]>([]);
+  const [filterDdds, setFilterDdds] = useState<string[]>([]);
 
   const groupsQ = useQuery({
     queryKey: ["wa-groups", connectionId],
