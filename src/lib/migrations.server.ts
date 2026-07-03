@@ -130,7 +130,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
         await supabase.from("group_migration_targets").update({ status: "skipped", error: rawStatus }).eq("id", t.id);
         skipped++;
       } else {
-        const err = String(resolvedIt?.message ?? rawStatus ?? "não entrou no grupo (privacidade/bloqueio/não é WhatsApp)");
+        const err = String(resolvedIt?.message || rawStatus || "não entrou no grupo (privacidade/bloqueio/não é WhatsApp)");
         await supabase.from("group_migration_targets").update({ phone: expectedPhone, jid: `${expectedPhone}@s.whatsapp.net`, status: "failed", error: err }).eq("id", t.id);
         failed++;
         errors[t.phone] = err;
