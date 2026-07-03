@@ -213,6 +213,9 @@ async function call<T = any>(
     const rawMsg = json?.response?.message ?? json?.message ?? text ?? `HTTP ${res.status}`;
     const msg = Array.isArray(rawMsg) ? rawMsg.map(String).join(" — ") : rawMsg;
     lastError = new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    (lastError as any).status = res.status;
+    (lastError as any).statusCode = res.status;
+    (lastError as any).body = json ?? text;
     if (!/error code:\s*1003/i.test(lastError.message)) {
       throw lastError;
     }
@@ -592,7 +595,42 @@ export function payloadIndicatesPairingLost(source: unknown): boolean {
   return false;
 }
 
+export function isPairingLostEvolutionState(state: unknown): boolean {
+  const normalized = String(state ?? "").trim().toLowerCase();
+  return (
+    normalized === "device_removed" ||
+    normalized === "logged_out" ||
+    normalized === "logged out" ||
+    normalized === "logout" ||
+    normalized === "unpaired" ||
+    normalized === "unauthorized" ||
+    normalized.includes("device_removed") ||
+    normalized.includes("logged_out") ||
+    normalized.includes("logged out") ||
+    normalized.includes("unpaired") ||
+    normalized.includes("conflict") && normalized.includes("401") ||
+    normalized.includes("stream:error") && normalized.includes("401")
+  );
+}
+
+export function isPairingLostEvolutionError(error: unknown): boolean {
+  const haystack = typeof error === "object" && error !== null
+    ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
+    : String(error ?? "").toLowerCase();
+  return (
+    isPairingLostEvolutionState(haystack) ||
+    haystack.includes("instance is not connected") ||
+    haystack.includes("the instance is not connected") ||
+    haystack.includes("não está conectada") ||
+    haystack.includes("nao esta conectada") ||
+    haystack.includes("statuscode\":401") ||
+    haystack.includes("status code\":401") ||
+    haystack.includes("status":401)
+  );
+}
+
 export function isTransientEvolutionError(error: unknown): boolean {
+  if (isPairingLostEvolutionError(error)) return false;
   const haystack = typeof error === "object" && error !== null
     ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
     : String(error ?? "").toLowerCase();
@@ -670,6 +708,7 @@ export async function reconnectEvolutionSession(
 
   const before = await resolveEvolutionStatus(instanceName).catch(() => null);
   if (before?.status === "online") return { ...before, restarted: false };
+  if (isPairingLostEvolutionState(before?.state)) return { ...before, restarted: false };
 
   // Reconexão automática preserva sessão: usa restart/reload. /connect só é
   // permitido em ação manual, pois em Baileys pode iniciar fluxo de QR.
