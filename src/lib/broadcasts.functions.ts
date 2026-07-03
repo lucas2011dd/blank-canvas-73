@@ -156,12 +156,10 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
         await context.supabase.from("broadcast_targets").update({
           status: "sent", sent_at: new Date().toISOString(),
         }).eq("id", t.id);
-        
-        await context.supabase.from("broadcasts").update({ sent_count: (bc.sent_count ?? 0) + 1 + results.filter(r => r.ok).length }).eq("id", bc.id);
         results.push({ id: t.id, ok: true });
       } catch (e: any) {
         await context.supabase.from("broadcast_targets").update({
-          status: "failed", last_error: e?.message ?? "erro", sent_at: new Date().toISOString(),
+          status: "failed", last_error: e?.message ?? "erro",
         } as any).eq("id", t.id);
         results.push({ id: t.id, ok: false, error: e?.message });
       }
@@ -176,6 +174,15 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
         .order("next_attempt_at", { ascending: true }).limit(1);
       // pausa curta entre envios do MESMO tick (anti-flood do próprio worker)
       await new Promise((r) => setTimeout(r, 500));
+    }
+
+    const okCount = results.filter((r) => r.ok).length;
+    const failCount = results.length - okCount;
+    if (okCount || failCount) {
+      await context.supabase.from("broadcasts").update({
+        sent_count: (bc.sent_count ?? 0) + okCount,
+        failed_count: (bc.failed_count ?? 0) + failCount,
+      }).eq("id", bc.id);
     }
 
     // Verifica conclusão
