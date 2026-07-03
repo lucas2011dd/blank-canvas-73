@@ -169,9 +169,9 @@ function ChatPage() {
           </ScrollArea>
         </Card>
 
-        <Card className="flex flex-col overflow-hidden">
+        <Card className={`flex flex-col overflow-hidden min-w-0 ${selected ? "flex" : "hidden lg:flex"}`}>
           {selected ? (
-            <ConvPane id={selected} connection={connections.find((c: any) => c.id === conversations.find((cv) => cv.id === selected)?.connection_id)} />
+            <ConvPane id={selected} onBack={() => setSelected(null)} connection={connections.find((c: any) => c.id === conversations.find((cv) => cv.id === selected)?.connection_id)} />
           ) : (
             <div className="flex flex-1 items-center justify-center text-muted-foreground">Selecione ou crie uma conversa</div>
           )}
