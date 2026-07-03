@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
-import { Plus, Search, Trash2, Download, MessageCircle } from "lucide-react";
+import { Plus, Search, Trash2, Download, MessageCircle, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { createContact, deleteContact, listContacts } from "@/lib/contacts.functions";
 import { listConnections } from "@/lib/connections.functions";
+import { exportContactsToGoogle } from "@/lib/google.functions";
 
 const q = queryOptions({ queryKey: ["contacts"], queryFn: () => listContacts({ data: {} }) });
 const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
@@ -64,6 +65,11 @@ function Page() {
     mutationFn: useServerFn(deleteContact),
     onSuccess: () => { toast.success("Removido"); qc.invalidateQueries({ queryKey: ["contacts"] }); },
   });
+  const gExport = useMutation({
+    mutationFn: useServerFn(exportContactsToGoogle),
+    onSuccess: (r: any) => toast.success(`${r.exported} contato(s) enviados ao Google. Abra o Gmail no celular para sincronizar.`),
+    onError: (e) => toast.error(e.message.includes("Google") ? e.message : "Vincule sua conta Google em Configurações → Integrações"),
+  });
 
   const filtered = data.filter((c) => {
     if (!search) return true;
@@ -87,8 +93,11 @@ function Page() {
           <h1 className="text-3xl font-bold tracking-tight">Contatos</h1>
           <p className="text-muted-foreground">{data.length} contato(s) sincronizado(s).</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={exportCSV}><Download className="mr-2 h-4 w-4" /> Exportar CSV</Button>
+          <Button variant="outline" onClick={() => gExport.mutate({ data: {} })} disabled={gExport.isPending}>
+            <Upload className="mr-2 h-4 w-4" /> {gExport.isPending ? "Enviando..." : "Enviar todos para Google"}
+          </Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild><Button><Plus className="mr-2 h-4 w-4" /> Novo contato</Button></DialogTrigger>
             <DialogContent>

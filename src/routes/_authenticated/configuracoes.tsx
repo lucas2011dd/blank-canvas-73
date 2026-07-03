@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Copy, KeyRound, User, Palette, Link2, Shield } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,8 +11,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { createApiKey, getMyProfile, listApiKeys, revokeApiKey, updateMyProfile } from "@/lib/settings.functions";
+import { disconnectGoogle, exportContactsToGoogle, googleConnectionStatus, importGoogleContacts } from "@/lib/google.functions";
 import { useTheme } from "@/components/theme-provider";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
 
 const profileQ = queryOptions({ queryKey: ["profile"], queryFn: () => getMyProfile() });
 const keysQ = queryOptions({ queryKey: ["api-keys"], queryFn: () => listApiKeys() });
@@ -101,21 +103,75 @@ function ThemeTab() {
 }
 
 function IntegrationsTab() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  const { data: status, refetch } = useSuspenseQuery(queryOptions({
+    queryKey: ["google-status"],
+    queryFn: () => googleConnectionStatus(),
+  }));
+  const imp = useMutation({
+    mutationFn: useServerFn(importGoogleContacts),
+    onSuccess: (r: any) => { toast.success(`${r.imported} contato(s) importado(s) do Google`); qc.invalidateQueries({ queryKey: ["contacts"] }); },
+    onError: (e) => toast.error(e.message),
+  });
+  const exp = useMutation({
+    mutationFn: useServerFn(exportContactsToGoogle),
+    onSuccess: (r: any) => toast.success(`${r.exported} contato(s) enviados para o Google. Abra o Gmail no celular para sincronizar.`),
+    onError: (e) => toast.error(e.message),
+  });
+  const disc = useMutation({
+    mutationFn: useServerFn(disconnectGoogle),
+    onSuccess: () => { toast.success("Google desconectado"); refetch(); },
+  });
+
+  useEffect(() => {
+    if (window.location.hash.includes("google=connected")) {
+      toast.success("Google conectado!");
+      history.replaceState(null, "", window.location.pathname);
+      refetch();
+    }
+  }, [refetch]);
+
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader><CardTitle>Google Contacts</CardTitle>
-          <CardDescription>Vincule sua conta Google via OAuth 2.0 para sincronizar contatos.</CardDescription></CardHeader>
-        <CardContent>
-          <Button variant="outline" onClick={() => { window.location.href = "/api/google/authorize"; }}>Vincular conta Google</Button>
-          <p className="mt-3 text-xs text-muted-foreground">Configure <code>GOOGLE_CLIENT_ID</code> e <code>GOOGLE_CLIENT_SECRET</code> no seu <code>.env</code>.</p>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">Google Contacts
+            {status.connected && <Badge variant="default">Conectado</Badge>}
+          </CardTitle>
+          <CardDescription>
+            Vincule seu Gmail para exportar todos os contatos do sistema para o Google Contatos.
+            Quando o mesmo Gmail estiver logado no seu celular, os contatos aparecem automaticamente na agenda.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {!status.connected ? (
+            <>
+              <Button onClick={() => { window.location.href = `/api/google/authorize?uid=${user?.id ?? ""}`; }}>
+                Vincular conta Google
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Requer <code>GOOGLE_CLIENT_ID</code> e <code>GOOGLE_CLIENT_SECRET</code> configurados nos Secrets, com People API ativada e redirect <code>{typeof window !== "undefined" ? window.location.origin : ""}/api/google/callback</code>.
+              </p>
+            </>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={() => exp.mutate({ data: {} })} disabled={exp.isPending}>
+                {exp.isPending ? "Enviando..." : "Enviar todos os contatos para o Google"}
+              </Button>
+              <Button variant="outline" onClick={() => imp.mutate(undefined as any)} disabled={imp.isPending}>
+                {imp.isPending ? "Importando..." : "Importar do Google"}
+              </Button>
+              <Button variant="ghost" onClick={() => disc.mutate(undefined as any)}>Desconectar</Button>
+            </div>
+          )}
         </CardContent>
       </Card>
       <Card>
         <CardHeader><CardTitle>WhatsApp Business API</CardTitle>
           <CardDescription>Suporta Evolution API, Meta Cloud e Twilio.</CardDescription></CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">Configure <code>WHATSAPP_PROVIDER</code>, <code>WHATSAPP_API_URL</code> e <code>WHATSAPP_API_KEY</code> no <code>.env</code>. As conexões são gerenciadas em <b>Menu Conexões</b>.</p>
+          <p className="text-sm text-muted-foreground">Configure <code>WHATSAPP_PROVIDER</code>, <code>WHATSAPP_API_URL</code> e <code>WHATSAPP_API_KEY</code>. As conexões são gerenciadas em <b>Menu Conexões</b>.</p>
         </CardContent>
       </Card>
     </div>
