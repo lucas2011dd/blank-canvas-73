@@ -17,6 +17,25 @@ function digitsOnly(v: unknown): string {
   return String(v ?? "").replace(/\D/g, "");
 }
 
+function safeToIso(ts: unknown): string {
+  const now = new Date().toISOString();
+  if (ts == null || ts === "") return now;
+  if (ts instanceof Date) return isNaN(ts.getTime()) ? now : ts.toISOString();
+  if (typeof ts === "number" && Number.isFinite(ts)) {
+    const ms = ts < 1e12 ? ts * 1000 : ts;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? now : d.toISOString();
+  }
+  const s = String(ts).trim();
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    const ms = s.length <= 10 ? n * 1000 : n;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? now : d.toISOString();
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? now : d.toISOString();
+
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
