@@ -25,7 +25,7 @@ function isIgnorableCleanupError(error: any): boolean {
 }
 
 async function safeDbStep(label: string, action: () => Promise<{ error?: any } | any>) {
-  const result = await action().catch((error: any) => ({ error }));
+  const result = await Promise.resolve(action()).then((r) => r, (error: any) => ({ error }));
   if (result?.error && !isIgnorableCleanupError(result.error)) {
     console.error(`[connections] cleanup ${label} falhou:`, result.error.message ?? result.error);
   }
