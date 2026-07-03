@@ -8,6 +8,81 @@ function instanceNameFor(id: string) {
   return `ch_${id.replace(/-/g, "")}`;
 }
 
+function instanceNameFromConnection(row: { id: string; metadata?: unknown }) {
+  const meta = (row.metadata as Record<string, unknown> | null) ?? {};
+  return typeof meta.evolution_instance === "string" && meta.evolution_instance.trim()
+    ? meta.evolution_instance.trim()
+    : instanceNameFor(row.id);
+}
+
+function instanceNameFromEvolutionRow(raw: any): string | null {
+  return raw?.name ?? raw?.instanceName ?? raw?.instance?.instanceName ?? raw?.instance?.name ?? null;
+}
+
+function isIgnorableCleanupError(error: any): boolean {
+  const msg = String(error?.message ?? error ?? "").toLowerCase();
+  return msg.includes("does not exist") || msg.includes("schema cache") || msg.includes("could not find");
+}
+
+async function safeDbStep(label: string, action: () => Promise<{ error?: any } | any>) {
+  const result = await action().catch((error: any) => ({ error }));
+  if (result?.error && !isIgnorableCleanupError(result.error)) {
+    console.error(`[connections] cleanup ${label} falhou:`, result.error.message ?? result.error);
+  }
+  return result;
+}
+
+async function hardDeleteConnectionRows(db: any, userId: string, connectionIds: string[]) {
+  const ids = Array.from(new Set(connectionIds.filter(Boolean)));
+  if (!ids.length) return 0;
+
+  const { data: conversations } = await safeDbStep("select conversations", () => db
+    .from("conversations").select("id").eq("user_id", userId).in("connection_id", ids));
+  const conversationIds = ((conversations ?? []) as Array<{ id: string }>).map((r) => r.id);
+  if (conversationIds.length) {
+    await safeDbStep("messages", () => db.from("messages").delete().in("conversation_id", conversationIds));
+  }
+  await safeDbStep("conversations", () => db.from("conversations").delete().eq("user_id", userId).in("connection_id", ids));
+
+  const { data: broadcasts } = await safeDbStep("select broadcasts", () => db
+    .from("broadcasts").select("id").eq("user_id", userId).in("connection_id", ids));
+  const broadcastIds = ((broadcasts ?? []) as Array<{ id: string }>).map((r) => r.id);
+  if (broadcastIds.length) {
+    await safeDbStep("broadcast targets", () => db.from("broadcast_targets").delete().in("broadcast_id", broadcastIds));
+  }
+  await safeDbStep("broadcasts", () => db.from("broadcasts").delete().eq("user_id", userId).in("connection_id", ids));
+
+  const { data: migrations } = await safeDbStep("select migrations", () => db
+    .from("group_migrations").select("id").eq("user_id", userId).in("connection_id", ids));
+  const migrationIds = ((migrations ?? []) as Array<{ id: string }>).map((r) => r.id);
+  if (migrationIds.length) {
+    await safeDbStep("migration targets", () => db.from("group_migration_targets").delete().in("migration_id", migrationIds));
+  }
+  await safeDbStep("group migrations", () => db.from("group_migrations").delete().eq("user_id", userId).in("connection_id", ids));
+
+  await safeDbStep("scheduled messages", () => db.from("scheduled_messages").delete().eq("user_id", userId).in("connection_id", ids));
+  await safeDbStep("whatsapp groups", () => db.from("whatsapp_groups").delete().eq("user_id", userId).in("connection_id", ids));
+  await safeDbStep("connection sessions", () => db.from("connection_sessions").delete().eq("user_id", userId).in("connection_id", ids));
+  await safeDbStep("audit logs", () => db.from("audit_logs").delete().eq("user_id", userId).eq("entity", "connection").in("entity_id", ids));
+
+  const { error, count } = await db
+    .from("connections")
+    .delete({ count: "exact" })
+    .eq("user_id", userId)
+    .in("id", ids);
+  if (error) throw new Error(`Falha ao limpar conexão no ConnectHub: ${error.message}`);
+  return count ?? ids.length;
+}
+
+async function removeEvolutionBestEffort(evolution: typeof import("@/lib/evolution.server").evolution, instanceName: string) {
+  const withTimeout = <T,>(p: Promise<T>, ms = 5_000) =>
+    Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
+  await withTimeout(evolution.logout(instanceName)).catch(() => null);
+  await withTimeout(evolution.remove(instanceName)).catch(() => null);
+  const stillExists = await withTimeout(evolution.instanceInfo(instanceName), 5_000).catch(() => null);
+  return !stillExists;
+}
+
 function digitsOnly(v: unknown): string {
   return String(v ?? "").replace(/\D/g, "");
 }
