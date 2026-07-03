@@ -208,6 +208,8 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
             </p>
           )}
           {previewQ.error && <p className="text-xs text-destructive mt-1">{(previewQ.error as Error).message}</p>}
+        </div>
+
 
         <div>
           <Label>Destino</Label>
