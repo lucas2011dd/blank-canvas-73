@@ -120,14 +120,15 @@ function Page() {
   const refresh = useServerFn(refreshConnectionStatus);
 
 
-  // Poll status a cada 5s para conexões em connecting
+  // Poll status real para conexões WhatsApp ativas/em pareamento; se o celular
+  // remover o aparelho e o webhook atrasar, a tela corrige sozinha.
   useEffect(() => {
-    const connecting = data.filter((c: any) => c.status === "connecting");
-    if (connecting.length === 0) return;
+    const liveWhatsapp = data.filter((c: any) => c.provider === "whatsapp" && c.status !== "offline");
+    if (liveWhatsapp.length === 0) return;
     const t = setInterval(async () => {
-      await Promise.all(connecting.map((c: any) => refresh({ data: { id: c.id } }).catch(() => null)));
+      await Promise.all(liveWhatsapp.map((c: any) => refresh({ data: { id: c.id } }).catch(() => null)));
       qc.invalidateQueries({ queryKey: ["connections"] });
-    }, 5000);
+    }, 8000);
     return () => clearInterval(t);
   }, [data, qc, refresh]);
 

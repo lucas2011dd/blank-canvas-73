@@ -128,7 +128,6 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               })();
             }
           } else if (event === "qrcode.updated" || event === "QRCODE_UPDATED") {
-            if (conn.status === "online") return new Response("ok");
             const { extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
             const resolved = await resolveEvolutionStatus(instanceName).catch(() => null);
             if (resolved?.status === "online") {
@@ -147,7 +146,15 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
             const qrImage = await extractQrImage(data);
             if (qrImage) {
               await supabaseAdmin.from("connections").update({
-                qr_code: qrImage, status: "connecting", last_sync_at: new Date().toISOString(),
+                qr_code: qrImage,
+                status: resolved?.status ?? "connecting",
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instanceName,
+                  evolution_state: resolved?.state ?? "qr_required",
+                  disconnected_at: new Date().toISOString(),
+                },
               }).eq("id", conn.id);
             }
           } else if (event === "contacts.upsert" || event === "CONTACTS_UPSERT") {
