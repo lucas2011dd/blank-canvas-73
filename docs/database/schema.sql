@@ -55,6 +55,7 @@ create or replace function public.touch_updated_at()
 returns trigger language plpgsql as $$
 begin new.updated_at = now(); return new; end $$;
 
+drop trigger if exists profiles_touch on public.profiles;
 create trigger profiles_touch before update on public.profiles
   for each row execute function public.touch_updated_at();
 
@@ -72,6 +73,7 @@ create table if not exists public.connections (
   updated_at timestamptz default now()
 );
 create index if not exists idx_connections_user on public.connections(user_id);
+drop trigger if exists connections_touch on public.connections;
 create trigger connections_touch before update on public.connections
   for each row execute function public.touch_updated_at();
 
@@ -94,6 +96,7 @@ create index if not exists idx_contacts_user on public.contacts(user_id);
 create index if not exists idx_contacts_search on public.contacts using gin (
   to_tsvector('portuguese', coalesce(name,'') || ' ' || coalesce(phone,'') || ' ' || coalesce(email,'') || ' ' || coalesce(company,''))
 );
+drop trigger if exists contacts_touch on public.contacts;
 create trigger contacts_touch before update on public.contacts
   for each row execute function public.touch_updated_at();
 
@@ -164,6 +167,7 @@ create table if not exists public.integrations (
   updated_at timestamptz default now(),
   unique(user_id, provider)
 );
+drop trigger if exists integrations_touch on public.integrations;
 create trigger integrations_touch before update on public.integrations
   for each row execute function public.touch_updated_at();
 
