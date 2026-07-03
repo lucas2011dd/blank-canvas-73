@@ -38,6 +38,9 @@ const createSchema = z.object({
   // Seleção de alvos: contatos por id, telefones avulsos, ou participantes de grupos
   contactIds: z.array(z.string().uuid()).optional().default([]),
   phones: z.array(z.string()).optional().default([]),
+  // Filtros geográficos BR (opcionais). Se ambos vazios: sem filtro.
+  filterStates: z.array(z.string().length(2)).optional().default([]),
+  filterDdds: z.array(z.string()).optional().default([]),
 });
 
 export const createBroadcast = createServerFn({ method: "POST" })
