@@ -418,8 +418,6 @@ export function evolutionStateToStatus(state?: string): EvolutionConnectionStatu
   if (["open", "online", "connected", "authenticated", "ready"].includes(normalized)) return "online";
   if (
     [
-      "close",
-      "closed",
       "offline",
       "disconnected",
       "logout",
@@ -440,9 +438,9 @@ export function evolutionStateToStatus(state?: string): EvolutionConnectionStatu
     normalized.includes("fail") ||
     normalized.includes("logged") ||
     normalized.includes("removed") ||
-    normalized.includes("disconnect") ||
-    normalized.includes("close")
+    normalized.includes("disconnect")
   ) return "offline";
+  if (["close", "closed", "stream:error", "stream error"].includes(normalized) || normalized.includes("close")) return "connecting";
   if (
     ["connecting", "qr", "qrcode", "pairing"].includes(normalized) ||
     normalized.includes("connect") ||
