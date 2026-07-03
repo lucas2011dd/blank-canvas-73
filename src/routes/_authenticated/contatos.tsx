@@ -65,6 +65,11 @@ function Page() {
     mutationFn: useServerFn(deleteContact),
     onSuccess: () => { toast.success("Removido"); qc.invalidateQueries({ queryKey: ["contacts"] }); },
   });
+  const gExport = useMutation({
+    mutationFn: useServerFn(exportContactsToGoogle),
+    onSuccess: (r: any) => toast.success(`${r.exported} contato(s) enviados ao Google. Abra o Gmail no celular para sincronizar.`),
+    onError: (e) => toast.error(e.message.includes("Google") ? e.message : "Vincule sua conta Google em Configurações → Integrações"),
+  });
 
   const filtered = data.filter((c) => {
     if (!search) return true;
