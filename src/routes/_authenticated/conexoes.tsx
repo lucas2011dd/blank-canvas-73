@@ -206,6 +206,16 @@ function Page() {
                       <QrCode className="mr-1 h-3 w-3" /> QR
                     </Button>
                   )}
+                  {c.provider === "whatsapp" && c.status === "online" && (
+                    <>
+                      <Button size="sm" variant="outline" onClick={() => sync.mutate({ data: { id: c.id } })} disabled={sync.isPending}>
+                        <Download className="mr-1 h-3 w-3" /> Sincronizar
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => setGroupsFor(c.id)}>
+                        <Users className="mr-1 h-3 w-3" /> Grupos
+                      </Button>
+                    </>
+                  )}
                   {c.status !== "offline" && (
                     <Button size="sm" variant="outline" onClick={() => disc.mutate({ data: { id: c.id } })}>
                       Desconectar
