@@ -37,7 +37,6 @@ export const sendMessage = createServerFn({ method: "POST" })
     body: z.string().trim().min(1).max(4000),
   }).parse(d))
   .handler(async ({ context, data }) => {
-    // Descobre se a conversa está atrelada a uma conexão WhatsApp
     const { data: conv } = await context.supabase
       .from("conversations")
       .select("id,title,connection_id")
@@ -45,20 +44,43 @@ export const sendMessage = createServerFn({ method: "POST" })
     if (!conv) throw new Error("Conversa não encontrada");
 
     let status: "sent" | "failed" = "sent";
+    let failureReason: string | null = null;
+
     if (conv.connection_id) {
       const { data: conn } = await context.supabase
         .from("connections").select("id,provider,status,metadata")
         .eq("id", conv.connection_id).maybeSingle();
-      if (conn?.provider === "whatsapp" && conn.status === "online") {
-        try {
-          const { evolution } = await import("@/lib/evolution.server");
-          const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
-          const phone = String(conv.title ?? "").replace(/\D/g, "");
-          if (!phone) throw new Error("Título da conversa deve ser o número (somente dígitos)");
-          await evolution.sendText(instance, phone, data.body);
-        } catch (e: any) {
+      if (conn?.provider === "whatsapp") {
+        if (conn.status !== "online") {
           status = "failed";
-          console.error("[sendMessage] evolution:", e?.message);
+          failureReason = "conexão não está online";
+        } else {
+          try {
+            const { evolution } = await import("@/lib/evolution.server");
+            const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
+            const title = String(conv.title ?? "");
+            let target: string | null = null;
+
+            // Conversa de grupo: título "Grupo: <subject>" → resolve JID via whatsapp_groups.
+            if (title.startsWith("Grupo:")) {
+              const subject = title.replace(/^Grupo:\s*/, "").trim();
+              const { data: grp } = await context.supabase
+                .from("whatsapp_groups").select("jid")
+                .eq("connection_id", conn.id).eq("subject", subject).maybeSingle();
+              target = grp?.jid ?? null;
+              if (!target) throw new Error("grupo não encontrado (sincronize a conexão)");
+            } else {
+              const phone = title.replace(/\D/g, "");
+              if (!phone) throw new Error("número inválido no título da conversa");
+              target = phone;
+            }
+
+            await evolution.sendText(instance, target, data.body);
+          } catch (e: any) {
+            status = "failed";
+            failureReason = e?.message ?? "falha desconhecida";
+            console.error("[sendMessage] evolution:", failureReason);
+          }
         }
       }
     }
@@ -68,7 +90,7 @@ export const sendMessage = createServerFn({ method: "POST" })
     }).select("*").single();
     if (error) throw new Error(error.message);
     await context.supabase.from("conversations").update({ last_message_at: new Date().toISOString() }).eq("id", data.conversationId);
-    if (status === "failed") throw new Error("Falha ao enviar via WhatsApp — verifique a conexão");
+    if (status === "failed") throw new Error(`Falha ao enviar via WhatsApp: ${failureReason ?? "verifique a conexão"}`);
     return msg;
   });
 
