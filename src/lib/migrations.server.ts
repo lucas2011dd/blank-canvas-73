@@ -195,70 +195,11 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     }
   }
 
-  try {
-    const resolved = await resolveEvolutionStatus(instance);
-    if (resolved.status !== "online") {
-      const state = await evolution.state(instance).catch(() => null);
-      const sessionRemoved = pairingLostSignal(conn, state);
-      const recovered = await tryReconnect();
-      if (!recovered) {
-      const requeued = await requeueTransientFailures(supabase, mig.id);
-      await supabase.from("connections").update({
-        status: "connecting",
-        qr_code: null,
-        metadata: {
-          ...(conn.metadata ?? {}),
-          evolution_instance: instance,
-          evolution_state: sessionRemoved ? "pairing_lost_restarting_silently" : (resolved.state ?? resolved.status),
-          auto_reconnect_at: new Date().toISOString(),
-        },
-      }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
-      await supabase.from("group_migrations").update({
-        failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
-        next_attempt_at: new Date(Date.now() + 15_000).toISOString(),
-        last_error: sessionRemoved
-          ? "Sessão oscilou — reconexão silenciosa ativa, sem recriar instância nem gerar QR automático"
-          : "Conexão oscilou — reconexão sem novo QR em andamento; fila retoma em 15s",
-      }).eq("id", mig.id);
-      return { migrationId, skipped: true, reason: "evolution_connection_closed" };
-      }
-    }
-  } catch (e) {
-    if (isLoggedOutEvolutionError(e)) {
-      const recovered = await tryReconnect();
-      await supabase.from("connections").update({
-        status: recovered ? "online" : "connecting",
-        qr_code: null,
-        last_sync_at: new Date().toISOString(),
-        metadata: {
-          ...(conn.metadata ?? {}),
-          evolution_instance: instance,
-          evolution_state: recovered ? "open" : "pairing_lost_restarting_silently",
-          auto_reconnect_at: new Date().toISOString(),
-        },
-      }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
-      await supabase.from("group_migrations").update({
-        next_attempt_at: new Date(Date.now() + 15_000).toISOString(),
-        last_error: recovered
-          ? "Conexão recuperada sem novo QR — migração continua"
-          : "Sessão oscilou — reconexão silenciosa ativa, sem recriar instância nem gerar QR automático",
-      }).eq("id", mig.id);
-      return { migrationId, skipped: true, reason: "silent_reconnect_after_pairing_signal" };
-    }
-    if (isTransientEvolutionError(e)) {
-      const recovered = await tryReconnect();
-      if (recovered) {
-        await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
-      } else {
-      await supabase.from("group_migrations").update({
-        next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-        last_error: "Evolution temporariamente indisponível — reconexão sem novo QR em 30s",
-      }).eq("id", mig.id);
-      return { migrationId, skipped: true, reason: "evolution_temporarily_unavailable" };
-      }
-    }
-    throw e;
-  }
+  // Se o banco já considera a conexão online, NÃO fazemos preflight pesado
+  // antes de cada número. Chamadas de state/fetchInstances entre um add e
+  // outro sobrecarregam o Baileys e podem gerar device_removed/401. O add é
+  // a única chamada à Evolution neste trecho; se ele falhar, o catch abaixo
+  // agenda retry/reconexão sem marcar o alvo como perdido.
 
 
   const requeued = await requeueTransientFailures(supabase, mig.id);

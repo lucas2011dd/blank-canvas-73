@@ -59,9 +59,20 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           .eq("provider", "whatsapp")
           .or("status.eq.online,status.eq.connecting,and(status.eq.offline,disconnected_manually.eq.false,auto_reconnect.eq.true)")
           .limit(40);
+        const { data: activeMigrationConns } = await supabaseAdmin.from("group_migrations")
+          .select("connection_id")
+          .eq("status", "running")
+          .limit(100);
+        const activeMigrationConnectionIds = new Set(
+          (activeMigrationConns ?? []).map((row: any) => row.connection_id).filter(Boolean),
+        );
         const { isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
         const { persistSessionSnapshot } = await import("@/lib/session-store.server");
         for (const conn of webhookConns ?? []) {
+          // Durante migração ativa e conexão já online, não faça setWebhook,
+          // state nem fetchInstances no início do tick. Essas chamadas entre
+          // um add e o próximo sobrecarregam o WebSocket da Evolution.
+          if (conn.status === "online" && activeMigrationConnectionIds.has(conn.id)) continue;
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
           const wh = buildWebhookUrl(instance);
           if (wh) await evolution.setWebhook(instance, wh).catch(() => null);
@@ -113,6 +124,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const deadline = Date.now() + Math.max(2_000, budgetMs);
         const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
         const migResults: any[] = [];
+        const migrationConnectionsTouched = new Set<string>();
 
         let pass = 0;
         while (Date.now() < deadline && pass < 500) {
@@ -127,6 +139,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
 
           for (const bc of running ?? []) {
             if (Date.now() >= deadline) break;
+            if (activeMigrationConnectionIds.has(bc.connection_id)) continue;
             const { data: conn } = await supabaseAdmin.from("connections")
               .select("status,metadata").eq("id", bc.connection_id).maybeSingle();
             if (!conn) continue;
@@ -229,6 +242,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
 
           for (const row of sched ?? []) {
             if (Date.now() >= deadline) break;
+            if (activeMigrationConnectionIds.has(row.connection_id)) continue;
             const { data: conn } = await supabaseAdmin.from("connections")
               .select("status,metadata").eq("id", row.connection_id).maybeSingle();
             if (!conn) continue;
@@ -299,9 +313,11 @@ export const Route = createFileRoute("/api/public/wa/tick")({
 
           // -------- Migrações de grupo devidas --------
           const { data: migs } = await supabaseAdmin.from("group_migrations")
-            .select("id").eq("status", "running").lte("next_attempt_at", nowIsoPass).limit(5);
+            .select("id,connection_id").eq("status", "running").lte("next_attempt_at", nowIsoPass).limit(5);
           for (const m of migs ?? []) {
             if (Date.now() >= deadline) break;
+            if (migrationConnectionsTouched.has(m.connection_id)) continue;
+            migrationConnectionsTouched.add(m.connection_id);
             try {
               const r = await processGroupMigrationBatch(supabaseAdmin, m.id);
               migResults.push(r);

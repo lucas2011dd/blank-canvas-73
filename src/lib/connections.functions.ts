@@ -331,6 +331,21 @@ export const refreshConnectionStatus = createServerFn({ method: "POST" })
       : instanceNameFor(data.id);
     let status: "online" | "offline" | "connecting" = existing.status as "online" | "offline" | "connecting";
     let state: string | undefined;
+    if (status === "online") {
+      const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
+        context.supabase.from("broadcasts")
+          .select("id", { count: "exact", head: true })
+          .eq("connection_id", data.id)
+          .eq("status", "running"),
+        context.supabase.from("group_migrations")
+          .select("id", { count: "exact", head: true })
+          .eq("connection_id", data.id)
+          .eq("status", "running"),
+      ]);
+      if (Boolean((activeBroadcasts ?? 0) + (activeMigrations ?? 0))) {
+        return { id: data.id, status, metadata: existingMeta, unchanged: true, automationActive: true };
+      }
+    }
     try {
       const resolved = await resolveEvolutionStatus(name);
       status = resolved.status;

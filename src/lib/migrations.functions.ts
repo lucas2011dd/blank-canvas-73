@@ -167,16 +167,10 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       targetSubject = data.targetSubject!;
       if (!targetGroupJid) throw new Error("Falha ao criar o grupo de destino");
 
-      // Verifica quem realmente entrou (privacidade/bloqueio derrubam silenciosamente).
-      try {
-        const parts = await evolution.groupParticipants(instance, targetGroupJid);
-        const joined = new Set(parts.map((p: any) => {
-          return participantPhone(p);
-        }).filter(Boolean));
-        for (const p of seed) if (joined.has(p)) initialAdded.push(p);
-      } catch {
-        // Sem verificação, assume o seed como pending — o worker tenta de novo.
-      }
+      // Não consultar participantes logo após criar/adicionar: isso pode
+      // derrubar o stream da Evolution. Se a criação retornou grupo, confiamos
+      // no retorno da API e marcamos o seed como adicionado.
+      initialAdded.push(...seed);
     }
 
     // Persiste migração
@@ -246,34 +240,11 @@ export const runGroupMigrationNow = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
 
-    // Drena múltiplos lotes na mesma chamada respeitando o delay configurado,
-    // até 45s no total, para que 1 clique/1 tick avance a migração real
-    // mesmo sem cron externo.
-    const startedAt = Date.now();
-    const MAX_MS = 45_000;
-    let last: any = null;
-    let batches = 0;
-
-    while (Date.now() - startedAt < MAX_MS && batches < 20) {
-      last = await processGroupMigrationBatch(supabaseAdmin, data.id, context.userId);
-      batches++;
-      if (last?.completed || last?.done) break;
-      if (last?.skipped) break; // connection_offline / evolution_closed — sai e deixa o cron/tick pegar
-
-      const { data: mig } = await supabaseAdmin.from("group_migrations")
-        .select("status,next_attempt_at,min_delay_seconds,max_delay_seconds")
-        .eq("id", data.id).maybeSingle();
-      if (!mig || (mig.status !== "running" && mig.status !== "pending")) break;
-
-      const wait = Math.max(1_000, Math.min(
-        (mig.max_delay_seconds ?? 60) * 1000,
-        Math.max(0, new Date(mig.next_attempt_at ?? Date.now()).getTime() - Date.now()),
-      ));
-      if (Date.now() - startedAt + wait > MAX_MS) break;
-      await new Promise((r) => setTimeout(r, wait));
-    }
-
-    return { ...(last ?? {}), batchesProcessed: batches };
+    // Segurança da sessão: um clique/manual executa só 1 add. Fazer vários
+    // adds na mesma chamada mantém o Worker prendendo a Evolution e costuma
+    // derrubar o stream entre o primeiro e o segundo participante.
+    const result = await processGroupMigrationBatch(supabaseAdmin, data.id, context.userId);
+    return { ...result, batchesProcessed: 1 };
   });
 
 
