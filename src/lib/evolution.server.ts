@@ -245,6 +245,45 @@ export const evolution = {
       body: { number, text },
     });
   },
+
+  async setWebhook(instanceName: string, url: string) {
+    return call(`/webhook/set/${encodeURIComponent(instanceName)}`, {
+      method: "POST",
+      body: {
+        webhook: {
+          enabled: true,
+          url,
+          byEvents: false,
+          base64: true,
+          events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED", "CONTACTS_UPSERT", "CHATS_UPSERT"],
+        },
+      },
+    }).catch(() => null);
+  },
+
+  async findContacts(instanceName: string): Promise<any[]> {
+    const res = await call<any>(`/chat/findContacts/${encodeURIComponent(instanceName)}`, {
+      method: "POST",
+      body: { where: {} },
+    }).catch(() => []);
+    return Array.isArray(res) ? res : (res?.contacts ?? res?.data ?? []);
+  },
+
+  async findChats(instanceName: string): Promise<any[]> {
+    const res = await call<any>(`/chat/findChats/${encodeURIComponent(instanceName)}`, {
+      method: "POST",
+      body: {},
+    }).catch(() => []);
+    return Array.isArray(res) ? res : (res?.chats ?? res?.data ?? []);
+  },
+
+  async fetchAllGroups(instanceName: string): Promise<any[]> {
+    const res = await call<any>(
+      `/group/fetchAllGroups/${encodeURIComponent(instanceName)}?getParticipants=false`,
+      { method: "GET" },
+    ).catch(() => []);
+    return Array.isArray(res) ? res : (res?.groups ?? res?.data ?? []);
+  },
 };
 
 export function evolutionStateToStatus(state?: string): "online" | "offline" | "connecting" {

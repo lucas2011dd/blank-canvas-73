@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
-import { Plus, RefreshCw, Trash2, QrCode, Circle } from "lucide-react";
+import { Plus, RefreshCw, Trash2, QrCode, Circle, Download, Users } from "lucide-react";
 import qrGen from "qrcode-generator";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,8 +15,11 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
   createConnection, deleteConnection, disconnectConnection, listConnections,
-  reconnectConnection, refreshConnectionStatus,
+  reconnectConnection, refreshConnectionStatus, syncWhatsappConnection,
+  listWhatsappGroups, toggleGroupMonitored,
 } from "@/lib/connections.functions";
+import { Checkbox } from "@/components/ui/checkbox";
+
 
 const q = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
 
@@ -73,7 +76,9 @@ function Page() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [qr, setQr] = useState<string | null>(null);
+  const [groupsFor, setGroupsFor] = useState<string | null>(null);
   const qrSrc = normalizeQrSrc(qr);
+
 
   const create = useMutation({
     mutationFn: useServerFn(createConnection),
@@ -104,7 +109,16 @@ function Page() {
     mutationFn: useServerFn(disconnectConnection),
     onSuccess: () => { toast.success("Desconectada"); qc.invalidateQueries({ queryKey: ["connections"] }); },
   });
+  const sync = useMutation({
+    mutationFn: useServerFn(syncWhatsappConnection),
+    onSuccess: (r: any) => {
+      toast.success(`Sync: ${r.contactsUpserted} contatos, ${r.conversationsUpserted} conversas, ${r.groupsUpserted} grupos`);
+      qc.invalidateQueries();
+    },
+    onError: (e) => toast.error(e.message),
+  });
   const refresh = useServerFn(refreshConnectionStatus);
+
 
   // Poll status a cada 5s para conexões em connecting
   useEffect(() => {
@@ -192,6 +206,16 @@ function Page() {
                       <QrCode className="mr-1 h-3 w-3" /> QR
                     </Button>
                   )}
+                  {c.provider === "whatsapp" && c.status === "online" && (
+                    <>
+                      <Button size="sm" variant="outline" onClick={() => sync.mutate({ data: { id: c.id } })} disabled={sync.isPending}>
+                        <Download className="mr-1 h-3 w-3" /> Sincronizar
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => setGroupsFor(c.id)}>
+                        <Users className="mr-1 h-3 w-3" /> Grupos
+                      </Button>
+                    </>
+                  )}
                   {c.status !== "offline" && (
                     <Button size="sm" variant="outline" onClick={() => disc.mutate({ data: { id: c.id } })}>
                       Desconectar
@@ -239,7 +263,59 @@ function Page() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <GroupsDialog connectionId={groupsFor} onClose={() => setGroupsFor(null)} />
     </div>
+  );
+}
+
+function GroupsDialog({ connectionId, onClose }: { connectionId: string | null; onClose: () => void }) {
+  const listGroups = useServerFn(listWhatsappGroups);
+  const toggle = useServerFn(toggleGroupMonitored);
+  const [groups, setGroups] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!connectionId) return;
+    setLoading(true);
+    listGroups({ data: { connectionId } })
+      .then((r) => setGroups(r as any[]))
+      .catch((e) => toast.error(e.message))
+      .finally(() => setLoading(false));
+  }, [connectionId, listGroups]);
+
+  return (
+    <Dialog open={!!connectionId} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><Users className="h-5 w-5" /> Grupos do WhatsApp</DialogTitle></DialogHeader>
+        <div className="max-h-[60vh] space-y-2 overflow-y-auto py-2">
+          {loading && <p className="text-sm text-muted-foreground">Carregando…</p>}
+          {!loading && groups.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              Nenhum grupo sincronizado ainda. Clique em <b>Sincronizar</b> primeiro.
+            </p>
+          )}
+          {groups.map((g) => (
+            <label key={g.id} className="flex items-center justify-between gap-3 rounded-md border p-3 hover:bg-accent">
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium">{g.subject}</p>
+                <p className="text-xs text-muted-foreground">{g.participants_count ?? 0} participantes</p>
+              </div>
+              <Checkbox
+                checked={g.monitored}
+                onCheckedChange={async (v) => {
+                  const monitored = v === true;
+                  setGroups((cur) => cur.map((x) => x.id === g.id ? { ...x, monitored } : x));
+                  try { await toggle({ data: { id: g.id, monitored } }); }
+                  catch (e: any) { toast.error(e.message); }
+                }}
+              />
+            </label>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">Marque para receber mensagens do grupo dentro do chat.</p>
+      </DialogContent>
+    </Dialog>
   );
 }
 
