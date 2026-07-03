@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus, RefreshCw, Trash2, QrCode, Circle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import {
-  createConnection, deleteConnection, disconnectConnection, listConnections, reconnectConnection,
+  createConnection, deleteConnection, disconnectConnection, listConnections,
+  reconnectConnection, refreshConnectionStatus,
 } from "@/lib/connections.functions";
 
 const q = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
@@ -43,11 +44,24 @@ function Page() {
   const reconnect = useMutation({
     mutationFn: useServerFn(reconnectConnection),
     onSuccess: (row: any) => { setQr(row.qr_code); qc.invalidateQueries({ queryKey: ["connections"] }); },
+    onError: (e) => toast.error(e.message),
   });
   const disc = useMutation({
     mutationFn: useServerFn(disconnectConnection),
     onSuccess: () => { toast.success("Desconectada"); qc.invalidateQueries({ queryKey: ["connections"] }); },
   });
+  const refresh = useServerFn(refreshConnectionStatus);
+
+  // Poll status a cada 5s para conexões em connecting
+  useEffect(() => {
+    const connecting = data.filter((c: any) => c.status === "connecting");
+    if (connecting.length === 0) return;
+    const t = setInterval(async () => {
+      await Promise.all(connecting.map((c: any) => refresh({ data: { id: c.id } }).catch(() => null)));
+      qc.invalidateQueries({ queryKey: ["connections"] });
+    }, 5000);
+    return () => clearInterval(t);
+  }, [data, qc, refresh]);
 
   return (
     <div className="space-y-6">
@@ -140,9 +154,17 @@ function Page() {
           <DialogHeader><DialogTitle className="flex items-center gap-2"><QrCode className="h-5 w-5" /> Escaneie o QR Code</DialogTitle></DialogHeader>
           <div className="flex flex-col items-center gap-3 py-4">
             <div className="rounded-lg bg-white p-4">
-              <img alt="QR" width={220} height={220} src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(qr ?? "")}`} />
+              {qr ? (
+                <img
+                  alt="QR"
+                  width={260}
+                  height={260}
+                  src={qr.startsWith("data:") ? qr : `data:image/png;base64,${qr}`}
+                />
+              ) : null}
             </div>
-            <p className="text-center text-xs text-muted-foreground">Abra o WhatsApp → Aparelhos conectados → Conectar</p>
+            <p className="text-center text-xs text-muted-foreground">Abra o WhatsApp → Aparelhos conectados → Conectar um aparelho</p>
+            <p className="text-center text-xs text-muted-foreground">O status será atualizado automaticamente após pareamento.</p>
           </div>
         </DialogContent>
       </Dialog>

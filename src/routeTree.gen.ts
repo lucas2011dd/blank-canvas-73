@@ -24,6 +24,7 @@ import { Route as AuthenticatedConexoesRouteImport } from './routes/_authenticat
 import { Route as AuthenticatedChatRouteImport } from './routes/_authenticated/chat'
 import { Route as ApiGoogleCallbackRouteImport } from './routes/api/google/callback'
 import { Route as ApiGoogleAuthorizeRouteImport } from './routes/api/google/authorize'
+import { Route as ApiPublicWaWebhookInstanceRouteImport } from './routes/api/public/wa/webhook.$instance'
 
 const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
   id: '/sitemap.xml',
@@ -101,6 +102,12 @@ const ApiGoogleAuthorizeRoute = ApiGoogleAuthorizeRouteImport.update({
   path: '/api/google/authorize',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicWaWebhookInstanceRoute =
+  ApiPublicWaWebhookInstanceRouteImport.update({
+    id: '/api/public/wa/webhook/$instance',
+    path: '/api/public/wa/webhook/$instance',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -117,6 +124,7 @@ export interface FileRoutesByFullPath {
   '/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
+  '/api/public/wa/webhook/$instance': typeof ApiPublicWaWebhookInstanceRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -133,6 +141,7 @@ export interface FileRoutesByTo {
   '/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
+  '/api/public/wa/webhook/$instance': typeof ApiPublicWaWebhookInstanceRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -151,6 +160,7 @@ export interface FileRoutesById {
   '/_authenticated/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
+  '/api/public/wa/webhook/$instance': typeof ApiPublicWaWebhookInstanceRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -169,6 +179,7 @@ export interface FileRouteTypes {
     | '/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
+    | '/api/public/wa/webhook/$instance'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -185,6 +196,7 @@ export interface FileRouteTypes {
     | '/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
+    | '/api/public/wa/webhook/$instance'
   id:
     | '__root__'
     | '/'
@@ -202,6 +214,7 @@ export interface FileRouteTypes {
     | '/_authenticated/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
+    | '/api/public/wa/webhook/$instance'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -212,6 +225,7 @@ export interface RootRouteChildren {
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
   ApiGoogleAuthorizeRoute: typeof ApiGoogleAuthorizeRoute
   ApiGoogleCallbackRoute: typeof ApiGoogleCallbackRoute
+  ApiPublicWaWebhookInstanceRoute: typeof ApiPublicWaWebhookInstanceRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -321,6 +335,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiGoogleAuthorizeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/wa/webhook/$instance': {
+      id: '/api/public/wa/webhook/$instance'
+      path: '/api/public/wa/webhook/$instance'
+      fullPath: '/api/public/wa/webhook/$instance'
+      preLoaderRoute: typeof ApiPublicWaWebhookInstanceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -357,17 +378,8 @@ const rootRouteChildren: RootRouteChildren = {
   SitemapDotxmlRoute: SitemapDotxmlRoute,
   ApiGoogleAuthorizeRoute: ApiGoogleAuthorizeRoute,
   ApiGoogleCallbackRoute: ApiGoogleCallbackRoute,
+  ApiPublicWaWebhookInstanceRoute: ApiPublicWaWebhookInstanceRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
