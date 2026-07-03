@@ -231,7 +231,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       }
     }
 
-    if (status === "offline" && stateIndicatesSessionRemoved(state)) {
+    if (status !== "online") {
       const connected = await evolution.connect(name).catch(() => null);
       qrBase64 = await extractQrImage(connected);
       if (!qrBase64) {
