@@ -360,17 +360,14 @@ export const evolution = {
     const { key } = env();
     const config = webhookConfig(url, key);
     try {
-      // Evolution v2 aplica `webhook_base64/events` no corpo direto. Quando
-      // enviado aninhado em `{ webhook: ... }`, a URL pode mudar mas filtros e
-      // base64 continuam antigos, gerando dumps enormes e timeouts.
       return await call(`/webhook/set/${encodeURIComponent(instanceName)}`, {
         method: "POST",
-        body: config,
+        body: { webhook: config },
       });
     } catch {
       return call(`/webhook/set/${encodeURIComponent(instanceName)}`, {
         method: "POST",
-        body: { webhook: config },
+        body: config,
       }).catch(() => null);
     }
   },
