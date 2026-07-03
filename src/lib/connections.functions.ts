@@ -13,6 +13,11 @@ function webhookUrl(instanceName: string): string | undefined {
   return `${base.replace(/\/$/, "")}/api/public/wa/webhook/${instanceName}`;
 }
 
+function digitsOnly(v: unknown): string {
+  return String(v ?? "").replace(/\D/g, "");
+}
+
+
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function getFreshWhatsappQr(
