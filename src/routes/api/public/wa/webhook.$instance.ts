@@ -176,6 +176,7 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
             if (hasActiveAutomation) {
               await supabaseAdmin.from("connections").update({
                 status: "connecting",
+                qr_code: null,
                 last_sync_at: new Date().toISOString(),
                 metadata: {
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
