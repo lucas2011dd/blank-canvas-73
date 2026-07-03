@@ -477,9 +477,14 @@ export const evolution = {
   },
 
   async addGroupParticipants(instanceName: string, groupJid: string, participants: string[]): Promise<any> {
+    // CORREÇÃO: Timeout aumentado de 10s para 30s.
+    // A Evolution API pode demorar até 20-25s para processar um addGroupParticipants
+    // quando o WhatsApp precisa verificar o número antes de adicionar.
+    // Com timeout de 10s, a chamada expirava, o Baileys ficava em estado
+    // inconsistente e gerava device_removed na próxima tentativa.
     return call<any>(
       `/group/updateParticipant/${encodeURIComponent(instanceName)}?groupJid=${encodeURIComponent(groupJid)}`,
-      { method: "POST", body: { action: "add", participants } },
+      { method: "POST", body: { action: "add", participants }, timeoutMs: 30_000 },
     );
   },
 };
@@ -630,10 +635,28 @@ export function isPairingLostEvolutionError(error: unknown): boolean {
 }
 
 export function isTransientEvolutionError(error: unknown): boolean {
+  // IMPORTANTE: device_removed/logged_out/401 NÃO são erros transientes —
+  // são erros permanentes de pareamento. Tratá-los como transientes causava
+  // loop de reconexão que o WhatsApp interpretava como comportamento suspeito,
+  // gerando mais device_removed e invalidando a sessão completamente.
   if (isPairingLostEvolutionError(error)) return false;
   const haystack = typeof error === "object" && error !== null
     ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
     : String(error ?? "").toLowerCase();
+  // Verifica explicitamente que não é um erro de pareamento antes de classificar
+  // como transiente — a verificação acima via isPairingLostEvolutionError pode
+  // não cobrir todas as variações de mensagem da Evolution v2.
+  const isPermanent = (
+    haystack.includes("device_removed") ||
+    haystack.includes("logged_out") ||
+    haystack.includes("logged out") ||
+    (haystack.includes("stream:error") && haystack.includes("401")) ||
+    haystack.includes("statusreason\":\"401") ||
+    haystack.includes("statusreason:401") ||
+    haystack.includes("status\":\"401") ||
+    haystack.includes("status:401")
+  );
+  if (isPermanent) return false;
   return (
     haystack.includes("connection closed") ||
     haystack.includes("connection close") ||
@@ -647,13 +670,7 @@ export function isTransientEvolutionError(error: unknown): boolean {
     haystack.includes("network") ||
     haystack.includes("fetch failed") ||
     haystack.includes("evolution temporariamente") ||
-    haystack.includes("temporarily unavailable") ||
-    haystack.includes("device_removed") ||
-    haystack.includes("logged_out") ||
-    haystack.includes("logged out") ||
-    haystack.includes("stream:error") && haystack.includes("401") ||
-    haystack.includes("statusreason\":401") ||
-    haystack.includes("statusreason:401")
+    haystack.includes("temporarily unavailable")
   );
 }
 

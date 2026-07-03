@@ -95,8 +95,12 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     targetSubject: z.string().trim().max(120).optional(),
     targetDescription: z.string().trim().max(500).optional(),
     batchSize: z.number().int().min(1).max(10).default(1),
-    minDelaySeconds: z.number().int().min(1).max(3600).default(15),
-    maxDelaySeconds: z.number().int().min(1).max(3600).default(30),
+    // CORREÇÃO: Defaults de delay aumentados de 15/30s para 25/60s.
+    // O WhatsApp detecta padrões de adição em grupo muito rápidos como spam
+    // e desconecta a sessão com device_removed. Intervalos mais longos
+    // simulam comportamento humano e evitam a desconexão.
+    minDelaySeconds: z.number().int().min(1).max(3600).default(25),
+    maxDelaySeconds: z.number().int().min(1).max(3600).default(60),
     excludePhones: z.array(z.string()).default([]),
     skipAdmins: z.boolean().default(true),
     skipSelf: z.boolean().default(true),

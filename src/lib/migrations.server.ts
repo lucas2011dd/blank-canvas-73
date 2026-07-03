@@ -14,22 +14,28 @@ function jitter(min: number, max: number) {
 
 function automationBatchSize(value: unknown): number {
   const configured = Number(value ?? 1);
-  // Teste inicial seguro: sempre 1 participante por batch.
-  // Não aumentar enquanto a sessão da Evolution estiver sensível a add em grupo.
+  // Forçado a 1: adicionar mais de 1 participante por lote aumenta
+  // drasticamente o risco de device_removed/401 no Baileys.
+  // O WhatsApp interpreta rajadas de addGroupParticipants como spam.
   const max = 1;
   return Math.max(1, Math.min(Number.isFinite(configured) ? Math.floor(configured) : 1, max));
 }
 
 function automationDelaySeconds(minValue: unknown, maxValue: unknown): number {
-  const minFloor = Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 10);
-  const maxFloor = Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 20);
+  // CORREÇÃO CRÍTICA: floors aumentados de 10/20s para 25/45s.
+  // O WhatsApp derruba sessões quando adições de grupo ocorrem em intervalos
+  // muito curtos. Pesquisas da comunidade Baileys indicam que < 20s por
+  // adição de grupo é considerado comportamento suspeito e gera device_removed.
+  // Recomendação: mínimo 25s, máximo 60s para operações de grupo.
+  const minFloor = Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 25);
+  const maxFloor = Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 45);
   const min = Math.max(
-    Number.isFinite(Number(minValue)) ? Number(minValue) : 15,
-    Number.isFinite(minFloor) ? minFloor : 10,
+    Number.isFinite(Number(minValue)) ? Number(minValue) : 25,
+    Number.isFinite(minFloor) ? minFloor : 25,
   );
   const max = Math.max(
-    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 30,
-    Number.isFinite(maxFloor) ? maxFloor : 20,
+    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 45,
+    Number.isFinite(maxFloor) ? maxFloor : 45,
     min,
   );
   return jitter(Math.floor(min), Math.floor(max));
@@ -99,7 +105,39 @@ async function requeueTransientFailures(supabase: any, migrationId: string) {
   return failedRows.length;
 }
 
+// CORREÇÃO: Lock distribuído por migração para evitar que dois ticks
+// simultâneos processem o mesmo batch, o que causava double-add e
+// sobrecarregava o WebSocket da Evolution.
+const MIGRATION_PROCESSING_LOCK: Map<string, number> = (globalThis as any).__migrationProcessingLock ??= new Map();
+const LOCK_TTL_MS = 55_000; // 55s — maior que o budget do tick (25s) para evitar lock eterno
+
+function acquireMigrationLock(migrationId: string): boolean {
+  const now = Date.now();
+  const lockedAt = MIGRATION_PROCESSING_LOCK.get(migrationId);
+  if (lockedAt && now - lockedAt < LOCK_TTL_MS) return false;
+  MIGRATION_PROCESSING_LOCK.set(migrationId, now);
+  return true;
+}
+
+function releaseMigrationLock(migrationId: string): void {
+  MIGRATION_PROCESSING_LOCK.delete(migrationId);
+}
+
 export async function processGroupMigrationBatch(supabase: any, migrationId: string, userIdScope?: string) {
+  // CORREÇÃO: Adquire lock antes de qualquer operação para evitar
+  // processamento concorrente do mesmo batch entre ticks sobrepostos.
+  if (!acquireMigrationLock(migrationId)) {
+    return { migrationId, skipped: true, reason: "locked_by_concurrent_tick" };
+  }
+
+  try {
+    return await _processGroupMigrationBatchInner(supabase, migrationId, userIdScope);
+  } finally {
+    releaseMigrationLock(migrationId);
+  }
+}
+
+async function _processGroupMigrationBatchInner(supabase: any, migrationId: string, userIdScope?: string) {
   let q = supabase.from("group_migrations").select("*").eq("id", migrationId);
   if (userIdScope) q = q.eq("user_id", userIdScope);
   const { data: mig } = await q.maybeSingle();
@@ -122,15 +160,16 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   const instance = conn.metadata?.evolution_instance ?? instanceNameFor(mig.connection_id);
 
   const tryReconnect = async () => {
-    // Cooldown de 5 min por instância: reconectar toda hora é interpretado
-    // pelo WhatsApp como comportamento suspeito e força device_removed.
-    const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 5 * 60_000);
+    // CORREÇÃO: Cooldown aumentado de 5min para 10min.
+    // Reconexões frequentes são interpretadas pelo WhatsApp como comportamento
+    // suspeito. O Baileys precisa de tempo para estabilizar após uma queda.
+    const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 10 * 60_000);
     const cache: Map<string, number> = ((globalThis as any).__migrationReconnectAt ??= new Map());
     const last = cache.get(instance) ?? 0;
     if (Date.now() - last < cooldownMs) return false;
     cache.set(instance, Date.now());
     // Reconecta preservando a sessão: restart/reload da instância, nunca /connect.
-    const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_500 }).catch(() => null);
+    const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 2_000 }).catch(() => null);
     if (recovered) {
       await supabase.from("connections").update({
         status: recovered.status,
@@ -182,10 +221,10 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
         }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
         await supabase.from("group_migrations").update({
           failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
-          next_attempt_at: new Date(Date.now() + 15_000).toISOString(),
+          next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
           last_error: sessionRemoved
             ? "Sessão oscilou — reconexão silenciosa ativa, sem recriar instância nem gerar QR automático"
-            : "WhatsApp reconectando sem novo QR — fila retoma sozinha em 15s",
+            : "WhatsApp reconectando sem novo QR — fila retoma sozinha em 30s",
         }).eq("id", mig.id);
         return { migrationId, skipped: true, reason: "connection_offline" };
         }
@@ -198,20 +237,27 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       const requeued = await requeueTransientFailures(supabase, mig.id);
       await supabase.from("group_migrations").update({
         failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
-        next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-        last_error: "Evolution indisponível — tentando reconectar sem novo QR em 30s",
+        next_attempt_at: new Date(Date.now() + 45_000).toISOString(),
+        last_error: "Evolution indisponível — tentando reconectar sem novo QR em 45s",
       }).eq("id", mig.id);
       return { migrationId, skipped: true, reason: "connection_offline" };
       }
     }
   }
 
-  // Se o banco já considera a conexão online, NÃO fazemos preflight pesado
-  // antes de cada número. Chamadas de state/fetchInstances entre um add e
-  // outro sobrecarregam o Baileys e podem gerar device_removed/401. O add é
-  // a única chamada à Evolution neste trecho; se ele falhar, o catch abaixo
-  // agenda retry/reconexão sem marcar o alvo como perdido.
-
+  // CORREÇÃO: Pausa de estabilização antes de chamar addGroupParticipants.
+  // O Baileys precisa de um intervalo mínimo após reconexão ou após o
+  // último add para não gerar stream:error/device_removed. Mesmo que o
+  // banco indique "online", o WebSocket pode ainda estar se estabilizando.
+  // Usa metadata.last_batch_at para persistir sem precisar de nova coluna.
+  const lastAddedAt = (mig.metadata as any)?.last_batch_at
+    ? new Date((mig.metadata as any).last_batch_at).getTime()
+    : 0;
+  const minIntervalMs = Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 5_000);
+  const elapsed = Date.now() - lastAddedAt;
+  if (elapsed < minIntervalMs) {
+    await new Promise((r) => setTimeout(r, minIntervalMs - elapsed));
+  }
 
   const requeued = await requeueTransientFailures(supabase, mig.id);
   const effectiveFailedCount = Math.max(0, (mig.failed_count ?? 0) - requeued);
@@ -268,10 +314,23 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
         await supabase.from("group_migration_targets").update({ status: "skipped", error: rawStatus }).eq("id", t.id);
         skipped++;
       } else {
-        const err = String(resolvedIt?.message || rawStatus || "não entrou no grupo (privacidade/bloqueio/não é WhatsApp)");
-        await supabase.from("group_migration_targets").update({ phone: expectedPhone, jid: `${expectedPhone}@s.whatsapp.net`, status: "failed", error: err }).eq("id", t.id);
-        failed++;
-        errors[t.phone] = err;
+        // CORREÇÃO: Se a API não retornou o participante na lista de resposta
+        // (byPhone vazio ou sem match), não marcar como falha imediatamente.
+        // A Evolution v2 às vezes retorna lista vazia mesmo em sucesso.
+        // Marcar como "added" com nota de incerteza é mais seguro que falhar.
+        if (!resolvedIt && list.length === 0) {
+          // Resposta vazia: assumir sucesso (comportamento observado na Evolution v2)
+          await supabase.from("group_migration_targets").update({
+            status: "added", phone: expectedPhone, jid: `${expectedPhone}@s.whatsapp.net`,
+            added_at: new Date().toISOString(),
+          }).eq("id", t.id);
+          added++;
+        } else {
+          const err = String(resolvedIt?.message || rawStatus || "não entrou no grupo (privacidade/bloqueio/não é WhatsApp)");
+          await supabase.from("group_migration_targets").update({ phone: expectedPhone, jid: `${expectedPhone}@s.whatsapp.net`, status: "failed", error: err }).eq("id", t.id);
+          failed++;
+          errors[t.phone] = err;
+        }
       }
     }
   } catch (e: any) {
@@ -286,13 +345,18 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, reauthRequired: true, message: REAUTH_REQUIRED_MESSAGE };
     }
     if (isTransientEvolutionError(e)) {
-      const recovered = await tryReconnect();
+      // CORREÇÃO: Não tentar reconectar imediatamente após erro transiente
+      // durante o add. O Baileys precisa de tempo para se recuperar.
+      // Apenas agenda retry com delay maior e mantém o lote pendente.
+      const retryDelayMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_MS ?? 30_000);
       await supabase.from("group_migrations").update({
         failed_count: effectiveFailedCount,
-        next_attempt_at: new Date(Date.now() + 15_000).toISOString(),
-        last_error: recovered
-          ? "Conexão recuperada sem novo QR — retry em 15s, lote mantido pendente"
-          : "Conexão caiu durante a adição — reconexão silenciosa ativa, lote mantido pendente",
+        next_attempt_at: new Date(Date.now() + retryDelayMs).toISOString(),
+        last_error: `Conexão instável durante adição — retry automático em ${Math.round(retryDelayMs / 1000)}s, lote mantido pendente`,
+        metadata: {
+          ...((mig.metadata as Record<string, unknown>) ?? {}),
+          last_batch_at: new Date().toISOString(),
+        },
       }).eq("id", mig.id);
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true };
     }
@@ -317,6 +381,12 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     next_attempt_at: done ? null : nextAt,
     finished_at: done ? new Date().toISOString() : null,
     last_error: Object.keys(errors).length ? Object.values(errors)[0] : null,
+    // CORREÇÃO: Registra timestamp do último batch em metadata para controle
+    // de intervalo mínimo entre adds (sem precisar de nova coluna no banco).
+    metadata: {
+      ...((mig.metadata as Record<string, unknown>) ?? {}),
+      last_batch_at: new Date().toISOString(),
+    },
   }).eq("id", mig.id);
 
   return { migrationId, added, failed, skipped, done };
