@@ -6,6 +6,21 @@
 // (ou, se não definido, à própria EVOLUTION_API_KEY — que a Evolution envia).
 import { createFileRoute } from "@tanstack/react-router";
 
+function stateNeedsQr(state: unknown): boolean {
+  const s = String(state ?? "").trim().toLowerCase();
+  return (
+    s.includes("qr") ||
+    s.includes("pair") ||
+    s.includes("not_connected") ||
+    s.includes("not connected") ||
+    s.includes("unpaired") ||
+    s.includes("logged") ||
+    s.includes("logout") ||
+    s.includes("removed") ||
+    s.includes("401")
+  );
+}
+
 export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
   server: {
     handlers: {
@@ -143,6 +158,14 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               }).eq("id", conn.id);
               return new Response("ok");
             }
+
+            // Um QR atrasado/transitório não deve derrubar uma sessão que o
+            // ConnectHub já conhece como online quando a Evolution não confirma
+            // o estado atual. Só trocamos para QR quando a checagem real responde.
+            if (conn.status === "online" && (!resolved || (resolved.status === "connecting" && !stateNeedsQr(resolved.state)))) {
+              return new Response("ok");
+            }
+
             const qrImage = await extractQrImage(data);
             if (qrImage) {
               await supabaseAdmin.from("connections").update({

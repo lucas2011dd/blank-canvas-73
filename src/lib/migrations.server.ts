@@ -110,8 +110,10 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   const instance = conn.metadata?.evolution_instance ?? instanceNameFor(mig.connection_id);
 
   const tryReconnect = async () => {
-    if (needsManualQr(conn)) return;
-    try { await evolution.connect(instance); } catch { /* noop */ }
+    // Não chamamos /instance/connect automaticamente durante migrações.
+    // Em Baileys/Evolution isso pode abrir fluxo de QR e invalidar uma sessão
+    // que estava apenas oscilando. O tick/webhook/status real assumem a retomada.
+    return;
   };
 
   if (conn.status !== "online") {
@@ -130,7 +132,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
           next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
           last_error: mustRescan
             ? "WhatsApp saiu dos aparelhos conectados — escaneie o QR novamente; a migração continua sozinha depois"
-            : "WhatsApp desconectado — tentando religar; a fila retoma sozinha em 30s",
+            : "WhatsApp oscilando — aguardando a sessão estabilizar; a fila retoma sozinha em 30s",
         }).eq("id", mig.id);
         return { migrationId, skipped: true, reason: "connection_offline" };
       }
@@ -159,7 +161,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
         next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
         last_error: mustRescan
           ? "WhatsApp desconectado/removido — escaneie o QR novamente; fila retoma em 30s"
-          : "Conexão caiu na Evolution — tentando religar; fila retoma em 30s",
+          : "Conexão oscilou na Evolution — aguardando estabilizar; fila retoma em 30s",
       }).eq("id", mig.id);
       return { migrationId, skipped: true, reason: "evolution_connection_closed" };
     }
