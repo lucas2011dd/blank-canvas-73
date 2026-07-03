@@ -188,8 +188,8 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
   const targetOptions = groups.filter((g: any) => g.jid !== sourceJid);
 
   return (
-    <DialogContent className="max-w-lg">
-      <DialogHeader><DialogTitle>Nova migração de grupo</DialogTitle></DialogHeader>
+    <DialogContent className="max-w-lg w-[calc(100vw-1rem)] sm:w-full max-h-[calc(100dvh-2rem)] overflow-y-auto p-4 sm:p-6">
+      <DialogHeader><DialogTitle className="text-base sm:text-lg">Nova migração de grupo</DialogTitle></DialogHeader>
       <div className="space-y-3">
         <div>
           <Label>Conexão WhatsApp</Label>
