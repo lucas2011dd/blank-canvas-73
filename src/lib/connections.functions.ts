@@ -158,7 +158,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
     // garante que a instância existe (idempotente) e busca o QR
-    const { evolution, evolutionStateToStatus, extractQrImage } = await import("@/lib/evolution.server");
+    const { evolution, extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
     const name = instanceNameFor(data.id);
 
     // tenta criar (se já existir a Evolution retorna erro — ignoramos)
@@ -171,8 +171,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
 
     if (!qrBase64) {
       try {
-        const s = await evolution.state(name);
-        status = evolutionStateToStatus(s.instance?.state);
+        status = (await resolveEvolutionStatus(name)).status;
       } catch { /* ignore */ }
     }
 
@@ -218,15 +217,21 @@ export const refreshConnectionStatus = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
-    const { evolution, evolutionStateToStatus } = await import("@/lib/evolution.server");
+    const { resolveEvolutionStatus } = await import("@/lib/evolution.server");
     const name = instanceNameFor(data.id);
     let status: "online" | "offline" | "connecting" = "offline";
+    let state: string | undefined;
     try {
-      const s = await evolution.state(name);
-      status = evolutionStateToStatus(s.instance?.state);
+      const resolved = await resolveEvolutionStatus(name);
+      status = resolved.status;
+      state = resolved.state;
     } catch { /* ignore */ }
 
-    const patch: Record<string, unknown> = { status, last_sync_at: new Date().toISOString() };
+    const patch: Record<string, unknown> = {
+      status,
+      last_sync_at: new Date().toISOString(),
+      metadata: { evolution_instance: name, evolution_state: state ?? status },
+    };
     if (status === "online") patch.qr_code = null;
 
     const { data: row, error } = await context.supabase
