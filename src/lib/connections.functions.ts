@@ -329,13 +329,12 @@ export const listEvolutionInstances = createServerFn({ method: "GET" })
 
     const linkedMap = new Map<string, { id: string; label: string }>();
     for (const row of linkedRows ?? []) {
-      const meta = (row.metadata as Record<string, unknown> | null) ?? {};
-      const inst = typeof meta.evolution_instance === "string" ? meta.evolution_instance : instanceNameFor(row.id);
+      const inst = instanceNameFromConnection(row);
       linkedMap.set(inst, { id: row.id, label: row.name });
     }
 
     return (rawList ?? []).map((raw: any) => {
-      const instanceName = raw?.name ?? raw?.instanceName ?? raw?.instance?.instanceName ?? raw?.instance?.name ?? "";
+      const instanceName = instanceNameFromEvolutionRow(raw) ?? "";
       const state = extractEvolutionConnectionState(raw);
       const status = evolutionStateToStatus(state);
       const ownerJid = raw?.ownerJid ?? raw?.owner ?? raw?.instance?.owner ?? raw?.instance?.ownerJid ?? null;
@@ -424,24 +423,21 @@ export const removeEvolutionInstance = createServerFn({ method: "POST" })
   }).parse(d))
   .handler(async ({ context, data }) => {
     const { evolution } = await import("@/lib/evolution.server");
-    await evolution.logout(data.instanceName).catch(() => null);
-    await evolution.remove(data.instanceName).catch(() => null);
+    const removedFromEvolution = await removeEvolutionBestEffort(evolution, data.instanceName);
 
+    let connecthubRemoved = 0;
     if (data.alsoRemoveConnection) {
       const { data: rows } = await context.supabase
         .from("connections").select("id,metadata").eq("user_id", context.userId);
       const ids = (rows ?? [])
-        .filter((r) => {
-          const meta = (r.metadata as Record<string, unknown> | null) ?? {};
-          const inst = typeof meta.evolution_instance === "string" ? meta.evolution_instance : instanceNameFor(r.id);
-          return inst === data.instanceName;
-        })
+        .filter((r) => instanceNameFromConnection(r) === data.instanceName)
         .map((r) => r.id);
       if (ids.length) {
-        await context.supabase.from("connections").delete().in("id", ids).eq("user_id", context.userId);
+        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+        connecthubRemoved = await hardDeleteConnectionRows(supabaseAdmin, context.userId, ids);
       }
     }
-    return { ok: true };
+    return { ok: true, removedFromEvolution, connecthubRemoved };
   });
 
 // Limpeza em massa. `scope` decide o que fazer:
@@ -458,29 +454,33 @@ export const wipeConnections = createServerFn({ method: "POST" })
     const withTimeout = <T,>(p: Promise<T>, ms = 4000) =>
       Promise.race([p, new Promise<T>((_, r) => setTimeout(() => r(new Error("timeout")), ms))]);
 
+    const { data: localRows } = await context.supabase
+      .from("connections").select("id,metadata,provider").eq("user_id", context.userId);
+
     // 1) ConnectHub primeiro — nunca fica travado por causa da Evolution.
     let connecthubRemoved = 0;
     if (data.scope === "connecthub" || data.scope === "both") {
-      const { data: rows } = await context.supabase
-        .from("connections").select("id").eq("user_id", context.userId);
-      const ids = (rows ?? []).map((r) => r.id);
+      const ids = (localRows ?? []).map((r) => r.id);
       if (ids.length) {
-        const { error } = await context.supabase.from("connections").delete().in("id", ids).eq("user_id", context.userId);
-        if (error) throw new Error(error.message);
-        connecthubRemoved = ids.length;
+        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+        connecthubRemoved = await hardDeleteConnectionRows(supabaseAdmin, context.userId, ids);
       }
     }
 
     // 2) Evolution best-effort, cada instância com timeout curto.
     let evolutionRemoved = 0;
     if (data.scope === "evolution" || data.scope === "both") {
-      const list = await withTimeout(evolution.fetchInstances(), 6000).catch(() => [] as any[]);
-      for (const raw of list ?? []) {
-        const name = raw?.name ?? raw?.instanceName ?? raw?.instance?.instanceName ?? raw?.instance?.name;
-        if (!name) continue;
-        await withTimeout(evolution.logout(name)).catch(() => null);
-        await withTimeout(evolution.remove(name)).catch(() => null);
-        evolutionRemoved++;
+      const listed = await withTimeout(evolution.fetchInstances(), 6000).catch(() => [] as any[]);
+      const localNames = (localRows ?? [])
+        .filter((r) => r.provider === "whatsapp")
+        .map((r) => instanceNameFromConnection(r));
+      const names = new Set<string>([
+        ...localNames,
+        ...(listed ?? []).map((raw: any) => instanceNameFromEvolutionRow(raw)).filter(Boolean) as string[],
+      ]);
+      for (const name of names) {
+        const ok = await removeEvolutionBestEffort(evolution, name);
+        if (ok) evolutionRemoved++;
       }
     }
 
