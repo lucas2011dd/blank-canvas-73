@@ -726,7 +726,11 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
     const { evolution } = await import("@/lib/evolution.server");
-    const name = instanceNameFor(data.id);
+    const { data: connRow } = await context.supabase
+      .from("connections").select("id,metadata")
+      .eq("id", data.id).eq("user_id", context.userId).maybeSingle();
+    if (!connRow) throw new Error("Conexão não encontrada");
+    const name = instanceNameFromConnection(connRow);
 
     // (Re)registra o webhook — a instância pode ter sido criada antes de
     // APP_PUBLIC_URL estar configurada.
