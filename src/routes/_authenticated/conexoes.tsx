@@ -404,7 +404,129 @@ function Page() {
       </Dialog>
 
       <GroupsDialog connectionId={groupsFor} onClose={() => setGroupsFor(null)} />
+      <AdoptDialog open={adoptOpen} onClose={() => setAdoptOpen(false)} onQr={(q) => setQr(q)} defaultLabel={`WhatsApp ${data.length + 1}`} />
     </div>
+  );
+}
+
+function AdoptDialog({ open, onClose, onQr, defaultLabel }: { open: boolean; onClose: () => void; onQr: (qr: string) => void; defaultLabel: string }) {
+  const qc = useQueryClient();
+  const listFn = useServerFn(listEvolutionInstances);
+  const attachFn = useServerFn(attachEvolutionInstance);
+  const removeFn = useServerFn(removeEvolutionInstance);
+  const q = useQuery({
+    queryKey: ["evolution-instances"],
+    queryFn: () => listFn(),
+    enabled: open,
+    refetchInterval: open ? 5000 : false,
+  });
+  const [selected, setSelected] = useState<string | null>(null);
+  const [label, setLabel] = useState(defaultLabel);
+
+  useEffect(() => { if (open) setLabel(defaultLabel); }, [open, defaultLabel]);
+
+  const attach = useMutation({
+    mutationFn: attachFn,
+    onSuccess: (row: any) => {
+      toast.success(`Instância "${row.name}" adotada.`);
+      qc.invalidateQueries({ queryKey: ["connections"] });
+      qc.invalidateQueries({ queryKey: ["evolution-instances"] });
+      if (row?.qr_code) onQr(row.qr_code);
+      onClose();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const remove = useMutation({
+    mutationFn: removeFn,
+    onSuccess: () => {
+      toast.success("Instância removida da Evolution.");
+      qc.invalidateQueries({ queryKey: ["evolution-instances"] });
+      qc.invalidateQueries({ queryKey: ["connections"] });
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const rows = (q.data as any[] | undefined) ?? [];
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Smartphone className="h-5 w-5" /> Instâncias na Evolution</DialogTitle>
+          <DialogDescription>
+            Escolha uma instância já criada no Evolution Manager para vincular aqui. Não cria nada novo — apenas reaproveita.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="max-h-[50vh] space-y-2 overflow-y-auto py-2">
+          {q.isLoading && <p className="text-sm text-muted-foreground">Carregando instâncias…</p>}
+          {q.error && <p className="text-sm text-destructive">Falha ao consultar Evolution: {(q.error as Error).message}</p>}
+          {!q.isLoading && rows.length === 0 && (
+            <p className="text-sm text-muted-foreground">Nenhuma instância encontrada na Evolution. Use "Nova instância" para criar uma.</p>
+          )}
+          {rows.map((r) => {
+            const isSel = selected === r.instanceName;
+            const disabled = !!r.linked;
+            return (
+              <div
+                key={r.instanceName}
+                className={`flex items-center gap-3 rounded-md border p-3 ${isSel ? "border-primary bg-accent" : ""} ${disabled ? "opacity-60" : "cursor-pointer hover:bg-accent"}`}
+                onClick={() => !disabled && setSelected(r.instanceName)}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">
+                    {r.profileName ?? r.instanceName}
+                    {r.linked && <span className="ml-2 text-xs text-muted-foreground">· já vinculada como "{r.linked.label}"</span>}
+                  </p>
+                  <p className="truncate font-mono text-[11px] text-muted-foreground">
+                    {r.instanceName}{r.ownerJid ? ` · ${r.ownerJid}` : ""}
+                  </p>
+                </div>
+                <StatusBadge status={r.status} />
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button size="icon" variant="ghost" className="text-destructive" onClick={(e) => e.stopPropagation()} title="Remover da Evolution">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Remover instância da Evolution?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        A instância <b className="font-mono">{r.instanceName}</b> será apagada do Evolution Manager.
+                        {r.linked && " O vínculo no ConnectHub também será removido."}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => remove.mutate({ data: { instanceName: r.instanceName, alsoRemoveConnection: !!r.linked } })}>
+                        Remover
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="space-y-2 border-t pt-3">
+          <Label htmlFor="adopt-label">Rótulo no ConnectHub</Label>
+          <Input id="adopt-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Ex.: WhatsApp 1" />
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancelar</Button>
+          <Button
+            disabled={!selected || !label.trim() || attach.isPending}
+            onClick={() => selected && attach.mutate({ data: { instanceName: selected, label: label.trim() } })}
+          >
+            {attach.isPending ? "Vinculando…" : "Vincular"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
