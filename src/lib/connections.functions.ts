@@ -13,6 +13,25 @@ function webhookUrl(instanceName: string): string | undefined {
   return `${base.replace(/\/$/, "")}/api/public/wa/webhook/${instanceName}`;
 }
 
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function getFreshWhatsappQr(
+  evolution: typeof import("@/lib/evolution.server").evolution,
+  extractQrImage: typeof import("@/lib/evolution.server").extractQrImage,
+  instanceName: string,
+) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const connected = await evolution.connect(instanceName).catch((e: any) => {
+      console.error("[connections] connect falhou:", e?.message);
+      return null;
+    });
+    const qr = await extractQrImage(connected);
+    if (qr) return qr;
+    await wait(900 + attempt * 700);
+  }
+  return null;
+}
+
 export const listConnections = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
@@ -55,14 +74,9 @@ export const createConnection = createServerFn({ method: "POST" })
         });
         qrBase64 = await extractQrImage(created);
 
-        // 2) se não veio, força um /connect (Evolution regenera)
+        // 2) se não veio, força /connect com pequenas retentativas (Evolution pode atrasar o QR)
         if (!qrBase64) {
-          try {
-            const c = await evolution.connect(name);
-            qrBase64 = await extractQrImage(c);
-          } catch (e: any) {
-            console.error("[connections] connect falhou:", e?.message);
-          }
+          qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
         }
         if (qrBase64) status = "connecting";
       } catch (e: any) {
@@ -118,15 +132,14 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     const name = instanceNameFor(data.id);
 
     // tenta criar (se já existir a Evolution retorna erro — ignoramos)
-    await evolution.createInstance(name, webhookUrl(name)).catch(() => null);
+    const created = await evolution.createInstance(name, webhookUrl(name)).catch(() => null);
 
     let qrBase64: string | null = null;
     let status: "online" | "offline" | "connecting" = "connecting";
-    try {
-      const connectRes = await evolution.connect(name);
-      qrBase64 = await extractQrImage(connectRes);
-    } catch (e: any) {
-      // Se falhar em connect, tenta ler estado atual
+    qrBase64 = await extractQrImage(created);
+    if (!qrBase64) qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
+
+    if (!qrBase64) {
       try {
         const s = await evolution.state(name);
         status = evolutionStateToStatus(s.instance?.state);
@@ -141,8 +154,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       const recreated = await evolution.createInstance(name, webhookUrl(name)).catch(() => null);
       qrBase64 = await extractQrImage(recreated);
       if (!qrBase64) {
-        const connectRes = await evolution.connect(name).catch(() => null);
-        qrBase64 = await extractQrImage(connectRes);
+        qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
       }
       status = qrBase64 ? "connecting" : "offline";
     }
