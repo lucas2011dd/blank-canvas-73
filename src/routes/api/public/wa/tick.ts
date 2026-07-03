@@ -16,6 +16,15 @@ function rateLimited(ip: string): boolean {
   return bucket.count > 60;
 }
 
+function webhookUrl(instanceName: string): string | undefined {
+  const previewHost = process.env.LOVABLE_PREVIEW_HOST;
+  const base = process.env.WHATSAPP_WEBHOOK_PUBLIC_URL
+    ?? (previewHost ? `https://${previewHost}` : undefined)
+    ?? process.env.APP_PUBLIC_URL;
+  if (!base) return undefined;
+  return `${base.replace(/\/$/, "")}/api/public/wa/webhook/${instanceName}`;
+}
+
 export const Route = createFileRoute("/api/public/wa/tick")({
   server: {
     handlers: {
@@ -34,6 +43,18 @@ export const Route = createFileRoute("/api/public/wa/tick")({
 
         const nowIso = new Date().toISOString();
         const summary = { broadcasts: 0, scheduled: 0, errors: 0 };
+
+        // Repara webhooks antigos que estavam apontando para a URL publicada 404.
+        const { data: webhookConns } = await supabaseAdmin.from("connections")
+          .select("id,metadata")
+          .eq("provider", "whatsapp")
+          .in("status", ["online", "connecting"])
+          .limit(20);
+        for (const conn of webhookConns ?? []) {
+          const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
+          const wh = webhookUrl(instance);
+          if (wh) await evolution.setWebhook(instance, wh).catch(() => null);
+        }
 
         // -------- Broadcasts em execução --------
         const { data: running } = await supabaseAdmin.from("broadcasts")

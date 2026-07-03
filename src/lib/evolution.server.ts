@@ -105,6 +105,38 @@ function env() {
   return { base: base.replace(/\/$/, ""), key };
 }
 
+function webhookAuthHeaders(key: string) {
+  const secret = process.env.EVOLUTION_WEBHOOK_SECRET ?? key;
+  return {
+    apikey: secret,
+    "x-evolution-webhook-secret": secret,
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ConnectHub-Webhook/1.0",
+    Accept: "application/json, text/plain, */*",
+  };
+}
+
+function webhookConfig(url: string, key: string) {
+  const events = [
+    "MESSAGES_UPSERT",
+    "CONNECTION_UPDATE",
+    "QRCODE_UPDATED",
+    "CONTACTS_UPSERT",
+    "CHATS_UPSERT",
+    "GROUPS_UPSERT",
+    "GROUP_PARTICIPANTS_UPDATE",
+  ];
+  return {
+    enabled: true,
+    url,
+    byEvents: false,
+    base64: true,
+    webhook_by_events: false,
+    webhook_base64: true,
+    events,
+    headers: webhookAuthHeaders(key),
+  };
+}
+
 function urlCandidates(base: string, path: string) {
   const primary = `${base}${path}`;
   const candidates: string[] = [];
@@ -206,18 +238,14 @@ export const evolution = {
     instanceName: string,
     webhookUrl?: string,
   ): Promise<any> {
+    const { key } = env();
     const body: any = {
       instanceName,
       integration: "WHATSAPP-BAILEYS",
       qrcode: true,
     };
     if (webhookUrl) {
-      body.webhook = {
-        url: webhookUrl,
-        byEvents: false,
-        base64: true,
-        events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED"],
-      };
+      body.webhook = webhookConfig(webhookUrl, key);
     }
     return call("/instance/create", { method: "POST", body });
   },
@@ -248,16 +276,11 @@ export const evolution = {
   },
 
   async setWebhook(instanceName: string, url: string) {
+    const { key } = env();
     return call(`/webhook/set/${encodeURIComponent(instanceName)}`, {
       method: "POST",
       body: {
-        webhook: {
-          enabled: true,
-          url,
-          byEvents: false,
-          base64: true,
-          events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED", "CONTACTS_UPSERT", "CHATS_UPSERT"],
-        },
+        webhook: webhookConfig(url, key),
       },
     }).catch(() => null);
   },
