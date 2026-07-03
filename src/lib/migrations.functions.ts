@@ -70,6 +70,10 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     minDelaySeconds: z.number().int().min(15).max(600).default(45),
     maxDelaySeconds: z.number().int().min(30).max(1800).default(120),
     excludePhones: z.array(z.string()).default([]),
+    skipAdmins: z.boolean().default(true),
+    skipSelf: z.boolean().default(true),
+    shuffleOrder: z.boolean().default(true),
+    maxParticipants: z.number().int().min(1).max(1024).optional(),
   }).parse(d))
   .handler(async ({ context, data }) => {
     if (data.mode === "new_group" && !data.targetSubject) throw new Error("Informe o nome do novo grupo");
@@ -81,14 +85,30 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     if (!conn) throw new Error("Conexão não encontrada");
     if (conn.status !== "online") throw new Error("Conexão precisa estar online");
     const instance = (conn.metadata as any)?.evolution_instance ?? instanceNameFor(conn.id);
+    const ownerPhone = digits((conn.metadata as any)?.owner_phone ?? (conn.metadata as any)?.number ?? "");
 
     const { evolution } = await import("@/lib/evolution.server");
     const parts = await evolution.groupParticipants(instance, data.sourceGroupJid);
     const exclude = new Set(data.excludePhones.map((p) => digits(p)));
-    const allPhones = Array.from(new Set(
-      parts.map((p: any) => jidToPhone(String(p.id ?? p.jid ?? "")))
+    if (data.skipSelf && ownerPhone) exclude.add(ownerPhone);
+
+    const filtered = parts.filter((p: any) => {
+      if (data.skipAdmins && (p.admin === "admin" || p.admin === "superadmin" || p.admin === true)) return false;
+      return true;
+    });
+    let allPhones = Array.from(new Set(
+      filtered.map((p: any) => jidToPhone(String(p.id ?? p.jid ?? "")))
         .filter((p) => p.length >= 8 && !exclude.has(p))
     ));
+    if (data.shuffleOrder) {
+      for (let i = allPhones.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [allPhones[i], allPhones[j]] = [allPhones[j], allPhones[i]];
+      }
+    }
+    if (data.maxParticipants && allPhones.length > data.maxParticipants) {
+      allPhones = allPhones.slice(0, data.maxParticipants);
+    }
     if (allPhones.length === 0) throw new Error("Nenhum participante válido no grupo de origem");
 
     // Subject de origem — melhor UX no histórico

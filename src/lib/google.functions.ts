@@ -33,8 +33,16 @@ async function getValidAccessToken(supabase: any, userId: string): Promise<strin
 export const googleConnectionStatus = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { data } = await context.supabase.from("google_tokens").select("expires_at,scope").eq("user_id", context.userId).maybeSingle();
-    return { connected: !!data, expiresAt: data?.expires_at ?? null };
+    try {
+      const { data, error } = await context.supabase
+        .from("google_tokens").select("expires_at,scope")
+        .eq("user_id", context.userId).maybeSingle();
+      if (error) return { connected: false, expiresAt: null, error: error.message };
+      return { connected: !!data, expiresAt: data?.expires_at ?? null };
+    } catch (e: any) {
+      // Tabela ainda não migrada ou outro erro — não quebra a página.
+      return { connected: false, expiresAt: null, error: String(e?.message ?? e) };
+    }
   });
 
 export const disconnectGoogle = createServerFn({ method: "POST" })

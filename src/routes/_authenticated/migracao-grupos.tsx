@@ -157,6 +157,10 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
   const [batchSize, setBatchSize] = useState(3);
   const [minDelay, setMinDelay] = useState(45);
   const [maxDelay, setMaxDelay] = useState(120);
+  const [skipAdmins, setSkipAdmins] = useState(true);
+  const [skipSelf, setSkipSelf] = useState(true);
+  const [shuffleOrder, setShuffleOrder] = useState(true);
+  const [maxParticipants, setMaxParticipants] = useState<number | "">("");
 
   const groupsQ = useQuery({
     queryKey: ["wa-groups", connectionId],
@@ -197,9 +201,15 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
             <option value="">— selecione —</option>
             {groups.map((g: any) => <option key={g.jid} value={g.jid}>{g.subject} ({g.participants_count ?? 0})</option>)}
           </select>
-          {previewQ.data && <p className="text-xs text-muted-foreground mt-1">✅ {previewQ.data.total} participantes serão migrados.</p>}
+          {previewQ.data && (
+            <p className="text-xs text-muted-foreground mt-1">
+              ✅ {previewQ.data.total} participantes encontrados
+              {skipAdmins ? ` · ${previewQ.data.participants.filter((p: any) => p.admin).length} admin(s) serão ignorados` : ""}
+            </p>
+          )}
           {previewQ.error && <p className="text-xs text-destructive mt-1">{(previewQ.error as Error).message}</p>}
         </div>
+
 
         <div>
           <Label>Destino</Label>
@@ -238,6 +248,29 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
             <Input type="number" min={30} value={maxDelay} onChange={(e) => setMaxDelay(Math.max(30, Number(e.target.value) || 120))} />
           </div>
         </div>
+
+        <div className="rounded-md border p-3 space-y-2">
+          <div className="text-xs font-medium">Opções anti-restrição</div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={skipAdmins} onChange={(e) => setSkipAdmins(e.target.checked)} />
+            Pular administradores do grupo (recomendado — evita confusão)
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={skipSelf} onChange={(e) => setSkipSelf(e.target.checked)} />
+            Não adicionar meu próprio número
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={shuffleOrder} onChange={(e) => setShuffleOrder(e.target.checked)} />
+            Randomizar ordem de adição (mais difícil de detectar)
+          </label>
+          <div className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={maxParticipants !== ""} onChange={(e) => setMaxParticipants(e.target.checked ? 50 : "")} />
+            <span>Limitar a</span>
+            <Input type="number" min={1} max={1024} className="h-7 w-24" disabled={maxParticipants === ""} value={maxParticipants} onChange={(e) => setMaxParticipants(Number(e.target.value) || 1)} />
+            <span>participantes</span>
+          </div>
+        </div>
+
         <p className="text-xs text-muted-foreground">
           <b>Anti-restrição:</b> adiciona {batchSize} contato(s) por vez com delay aleatório entre {minDelay}–{maxDelay}s.
           Recomendado: batch ≤ 3 e delay ≥ 45s para grupos grandes; contas novas devem usar valores maiores.
@@ -256,6 +289,8 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
             targetGroupJid: mode === "existing_group" ? targetJid : undefined,
             batchSize, minDelaySeconds: minDelay, maxDelaySeconds: maxDelay,
             excludePhones: [],
+            skipAdmins, skipSelf, shuffleOrder,
+            maxParticipants: maxParticipants === "" ? undefined : Number(maxParticipants),
           } })}
         >
           {start.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
