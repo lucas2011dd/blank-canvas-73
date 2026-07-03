@@ -203,7 +203,7 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
         if (isPairingLostEvolutionError(e)) {
           await context.supabase.from("broadcast_targets").update({
             status: "pending",
-            last_error: REAUTH_REQUIRED_MESSAGE,
+            error: REAUTH_REQUIRED_MESSAGE,
           } as any).eq("id", t.id);
           await markConnectionReauthRequired(context.supabase, {
             connectionId: conn.id,
@@ -229,12 +229,12 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
           await context.supabase.from("broadcast_targets").update({
             status: "pending",
             next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-            last_error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
+            error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
           } as any).eq("id", t.id);
           break;
         }
         await context.supabase.from("broadcast_targets").update({
-          status: "failed", last_error: e?.message ?? "erro",
+          status: "failed", error: e?.message ?? "erro",
         } as any).eq("id", t.id);
         results.push({ id: t.id, ok: false, error: e?.message });
       }

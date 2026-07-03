@@ -76,7 +76,7 @@ export async function markConnectionReauthRequired(
   if (broadcastIds.length) {
     await safeStep("requeue sending broadcast targets", () => supabase
       .from("broadcast_targets")
-      .update({ status: "pending", last_error: REAUTH_REQUIRED_MESSAGE })
+      .update({ status: "pending", error: REAUTH_REQUIRED_MESSAGE })
       .in("broadcast_id", broadcastIds)
       .eq("status", "sending"));
   }

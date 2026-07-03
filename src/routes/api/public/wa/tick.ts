@@ -216,7 +216,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               if (isPairingLostEvolutionError(e)) {
                 await supabaseAdmin.from("broadcast_targets").update({
                   status: "pending",
-                  last_error: REAUTH_REQUIRED_MESSAGE,
+                  error: REAUTH_REQUIRED_MESSAGE,
                 }).eq("id", t.id);
                 await markConnectionReauthRequired(supabaseAdmin, {
                   connectionId: bc.connection_id,
@@ -243,13 +243,13 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 await supabaseAdmin.from("broadcast_targets").update({
                   status: "pending",
                   next_attempt_at: new Date(Date.now() + recoveryMs).toISOString(),
-                  last_error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
+                  error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
                 }).eq("id", t.id);
                 didWork = true;
                 continue;
               }
               await supabaseAdmin.from("broadcast_targets").update({
-                status: "failed", last_error: String(e?.message ?? "erro"),
+                status: "failed", error: String(e?.message ?? "erro"),
               }).eq("id", t.id);
               await supabaseAdmin.from("broadcasts").update({ failed_count: (bc.failed_count ?? 0) + 1 }).eq("id", bc.id);
               summary.errors++;
