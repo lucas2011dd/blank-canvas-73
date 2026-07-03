@@ -7,7 +7,6 @@ function instanceNameFor(id: string) {
 }
 
 const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
-const jidToPhone = (jid: string) => digits(jid.split("@")[0] ?? "");
 
 function participantPhone(p: any): string {
   return digits(
