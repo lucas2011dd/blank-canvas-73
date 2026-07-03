@@ -196,11 +196,16 @@ function ConvPane({ id, connection, onBack }: { id: string; connection?: any; on
 
   return (
     <>
-      {connection && (
-        <div className="flex items-center gap-2 border-b bg-muted/50 px-4 py-2 text-xs">
-          <Link2 className="h-3 w-3" />
-          <span>Vinculada a <strong>{connection.name}</strong></span>
-          <Badge variant={connection.status === "online" ? "default" : "outline"}>{connection.status}</Badge>
+      {(connection || onBack) && (
+        <div className="flex items-center gap-2 border-b bg-muted/50 px-3 py-2 text-xs">
+          {onBack && (
+            <button type="button" onClick={onBack} className="lg:hidden rounded-md border px-2 py-1 text-xs min-h-11 min-w-11 inline-flex items-center justify-center" aria-label="Voltar">←</button>
+          )}
+          {connection && <>
+            <Link2 className="h-3 w-3 shrink-0" />
+            <span className="truncate min-w-0">Vinculada a <strong>{connection.name}</strong></span>
+            <Badge variant={connection.status === "online" ? "default" : "outline"} className="shrink-0">{connection.status}</Badge>
+          </>}
         </div>
       )}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-2">
