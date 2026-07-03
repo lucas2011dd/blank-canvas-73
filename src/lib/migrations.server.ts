@@ -21,8 +21,15 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   }
   if (!mig.target_group_jid) throw new Error("Grupo destino ausente");
 
-  const { data: conn } = await supabase.from("connections")
-    .select("status,metadata").eq("id", mig.connection_id).maybeSingle();
+  // Escopa o lookup de conexão pelo user_id da migração, mesmo usando o
+  // admin client — evita que uma migração forjada aponte para a conexão de
+  // outro usuário.
+  const { data: conn } = await supabaseAdmin
+    .from("connections")
+    .select("status,metadata,user_id")
+    .eq("id", mig.connection_id)
+    .eq("user_id", mig.user_id)
+    .maybeSingle();
   if (!conn) throw new Error("Conexão não encontrada");
   if (conn.status !== "online") {
     await supabase.from("group_migrations").update({
