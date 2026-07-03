@@ -1,7 +1,8 @@
 // Server-only worker para processar 1 batch de uma migração de grupo.
 // É importado dinamicamente por server functions e pelo cron público
 // (/api/public/wa/tick). NUNCA importe no cliente.
-import { evolution, isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } from "@/lib/evolution.server";
+import { markConnectionReauthRequired, REAUTH_REQUIRED_MESSAGE } from "@/lib/automation-safety.server";
+import { evolution, isPairingLostEvolutionError, isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } from "@/lib/evolution.server";
 
 function instanceNameFor(id: string) {
   return `ch_${id.replace(/-/g, "")}`;
@@ -154,8 +155,18 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       } else {
         const state = await evolution.state(instance).catch(() => null);
         const sessionRemoved = isLoggedOutEvolutionError(state) || pairingLostSignal(conn, state);
-        const recovered = await tryReconnect();
-        if (recovered) {
+          if (sessionRemoved) {
+            await markConnectionReauthRequired(supabase, {
+              connectionId: mig.connection_id,
+              userId: mig.user_id,
+              instanceName: instance,
+              reason: "device_removed",
+            });
+            await requeueTransientFailures(supabase, mig.id);
+            return { migrationId, skipped: true, reason: "reauth_required" };
+          }
+          const recovered = await tryReconnect();
+          if (recovered) {
           await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
         } else {
         const requeued = await requeueTransientFailures(supabase, mig.id);
@@ -264,7 +275,17 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       }
     }
   } catch (e: any) {
-    if (isTransientEvolutionError(e) || isLoggedOutEvolutionError(e)) {
+    if (isPairingLostEvolutionError(e) || isLoggedOutEvolutionError(e)) {
+      await markConnectionReauthRequired(supabase, {
+        connectionId: mig.connection_id,
+        userId: mig.user_id,
+        instanceName: instance,
+        reason: String(e?.message ?? "device_removed"),
+      });
+      await requeueTransientFailures(supabase, mig.id);
+      return { migrationId, added: 0, failed: 0, skipped: 0, done: false, reauthRequired: true, message: REAUTH_REQUIRED_MESSAGE };
+    }
+    if (isTransientEvolutionError(e)) {
       const recovered = await tryReconnect();
       await supabase.from("group_migrations").update({
         failed_count: effectiveFailedCount,

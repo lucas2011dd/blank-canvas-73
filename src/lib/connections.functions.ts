@@ -511,7 +511,8 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     // Reconexão NÃO destrutiva: nunca apaga/recria uma sessão existente aqui.
     // Apagar a instância força o WhatsApp a pedir QR de novo e foi a causa de
     // sessões ainda válidas caírem apenas dentro do ConnectHub.
-    const { evolution, extractQrImage, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const { evolution, extractQrImage, isPairingLostEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const { markConnectionReauthRequired } = await import("@/lib/automation-safety.server");
     const { data: existing } = await context.supabase
       .from("connections")
       .select("metadata,status")
@@ -554,11 +555,34 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     }
 
     if (status !== "online") {
+      if (isPairingLostEvolutionError(state)) {
+        await markConnectionReauthRequired(context.supabase, {
+          connectionId: data.id,
+          userId: context.userId,
+          instanceName: name,
+          reason: state ?? "device_removed",
+        });
+        status = "offline";
+        suppressManualQr = false;
+      }
+    }
+
+    if (status !== "online" && !isPairingLostEvolutionError(state)) {
       const recovered = await reconnectEvolutionSession(name, {
         attempts: 3,
         delayMs: 1_000,
         allowConnect: !hasActiveAutomation,
       }).catch(() => null);
+      if (isPairingLostEvolutionError(recovered?.state)) {
+        await markConnectionReauthRequired(context.supabase, {
+          connectionId: data.id,
+          userId: context.userId,
+          instanceName: name,
+          reason: recovered?.state ?? "device_removed",
+        });
+        status = "offline";
+        state = "reauth_required";
+      } else
       if (recovered?.status === "online") {
         status = "online";
         qrBase64 = null;
@@ -725,7 +749,8 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
-    const { evolution } = await import("@/lib/evolution.server");
+    const { evolution, isPairingLostEvolutionError } = await import("@/lib/evolution.server");
+    const { markConnectionReauthRequired } = await import("@/lib/automation-safety.server");
     const { data: connRow } = await context.supabase
       .from("connections").select("id,metadata")
       .eq("id", data.id).eq("user_id", context.userId).maybeSingle();
@@ -752,6 +777,14 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
     if (socketDead && contactsRaw.length === 0 && chatsRaw.length === 0 && groupsRaw.length === 0) {
       // Tenta um restart; se falhar, sinaliza para o usuário reparear.
       try { await evolution.restart(name); } catch { /* noop */ }
+      if (failures.some((f) => isPairingLostEvolutionError(f.reason))) {
+        await markConnectionReauthRequired(context.supabase, {
+          connectionId: data.id,
+          userId: context.userId,
+          instanceName: name,
+          reason: "device_removed",
+        });
+      }
       throw new Error("A sessão do WhatsApp foi removida dos aparelhos conectados no seu celular. Clique em Reconectar e escaneie o QR novamente.");
     }
 
