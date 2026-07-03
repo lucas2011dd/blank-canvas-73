@@ -117,6 +117,17 @@ function Page() {
     return () => clearInterval(t);
   }, [data, qc, refresh]);
 
+  // Realtime — reage a mudanças na tabela connections sem esperar polling
+  useEffect(() => {
+    const channel = supabase.channel("connections-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "connections" }, () => {
+        qc.invalidateQueries({ queryKey: ["connections"] });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc]);
+
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
