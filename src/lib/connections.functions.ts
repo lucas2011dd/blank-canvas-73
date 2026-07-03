@@ -227,10 +227,21 @@ export const refreshConnectionStatus = createServerFn({ method: "POST" })
       state = resolved.state;
     } catch { /* ignore */ }
 
+    const { data: existing } = await context.supabase
+      .from("connections")
+      .select("metadata")
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+
     const patch: Record<string, unknown> = {
       status,
       last_sync_at: new Date().toISOString(),
-      metadata: { evolution_instance: name, evolution_state: state ?? status },
+      metadata: {
+        ...((existing?.metadata as Record<string, unknown> | null) ?? {}),
+        evolution_instance: name,
+        evolution_state: state ?? status,
+      },
     };
     if (status === "online") patch.qr_code = null;
 
