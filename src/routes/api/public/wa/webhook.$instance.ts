@@ -12,12 +12,12 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
       POST: async ({ request, params }) => {
         // FAIL-CLOSED: se nenhum segredo estiver configurado, rejeita.
         const expected = process.env.EVOLUTION_WEBHOOK_SECRET ?? process.env.EVOLUTION_API_KEY ?? "";
-        const got =
-          request.headers.get("apikey") ??
-          request.headers.get("x-evolution-webhook-secret") ??
-          request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ??
-          "";
-        if (!expected || got !== expected) {
+        const candidates = [
+          request.headers.get("apikey"),
+          request.headers.get("x-evolution-webhook-secret"),
+          request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""),
+        ].filter(Boolean);
+        if (!expected || !candidates.includes(expected)) {
           return new Response("unauthorized", { status: 401 });
         }
 
