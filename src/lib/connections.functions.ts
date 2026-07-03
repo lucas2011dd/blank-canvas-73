@@ -131,6 +131,20 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       } catch { /* ignore */ }
     }
 
+    // Instâncias antigas/presas às vezes não devolvem QR no /connect.
+    // Se não estiver online, recria a instância e pede um QR novo.
+    if (!qrBase64 && status !== "online") {
+      await evolution.logout(name).catch(() => null);
+      await evolution.remove(name).catch(() => null);
+      const recreated = await evolution.createInstance(name, webhookUrl(name)).catch(() => null);
+      qrBase64 = await extractQrImage(recreated);
+      if (!qrBase64) {
+        const connectRes = await evolution.connect(name).catch(() => null);
+        qrBase64 = await extractQrImage(connectRes);
+      }
+      status = qrBase64 ? "connecting" : "offline";
+    }
+
     const { data: row, error } = await context.supabase
       .from("connections")
       .update({
