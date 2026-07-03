@@ -1,22 +1,24 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
-import { Plus, RefreshCw, Trash2, QrCode, Circle, Download, Users } from "lucide-react";
+import { Plus, RefreshCw, Trash2, QrCode, Circle, Download, Users, Link2, MoreVertical, Eraser, Smartphone } from "lucide-react";
 import qrGen from "qrcode-generator";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
   createConnection, deleteConnection, disconnectConnection, listConnections,
   reconnectConnection, refreshConnectionStatus, syncWhatsappConnection,
   listWhatsappGroups, toggleGroupMonitored, pollWhatsappQr,
+  listEvolutionInstances, attachEvolutionInstance, removeEvolutionInstance, wipeConnections,
 } from "@/lib/connections.functions";
 import { Checkbox } from "@/components/ui/checkbox";
 
