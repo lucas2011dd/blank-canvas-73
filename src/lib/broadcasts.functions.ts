@@ -38,6 +38,9 @@ const createSchema = z.object({
   // Seleção de alvos: contatos por id, telefones avulsos, ou participantes de grupos
   contactIds: z.array(z.string().uuid()).optional().default([]),
   phones: z.array(z.string()).optional().default([]),
+  // Filtros geográficos BR (opcionais). Se ambos vazios: sem filtro.
+  filterStates: z.array(z.string().length(2)).optional().default([]),
+  filterDdds: z.array(z.string()).optional().default([]),
 });
 
 export const createBroadcast = createServerFn({ method: "POST" })
@@ -47,6 +50,8 @@ export const createBroadcast = createServerFn({ method: "POST" })
     if (data.maxDelaySeconds < data.minDelaySeconds) throw new Error("Delay máximo deve ser ≥ mínimo");
 
     // Resolve alvos
+    const { phoneMatchesBrFilter } = await import("@/lib/br-ddd");
+    const geoFilter = { states: data.filterStates, ddds: data.filterDdds };
     const targets: Array<{ phone: string; name: string | null; contact_id: string | null }> = [];
     const seen = new Set<string>();
 
@@ -56,6 +61,7 @@ export const createBroadcast = createServerFn({ method: "POST" })
       for (const r of rows ?? []) {
         const p = digits(r.phone);
         if (!p || seen.has(p)) continue;
+        if (!phoneMatchesBrFilter(p, geoFilter)) continue;
         seen.add(p);
         targets.push({ phone: p, name: r.name ?? null, contact_id: r.id });
       }
@@ -63,10 +69,11 @@ export const createBroadcast = createServerFn({ method: "POST" })
     for (const raw of data.phones) {
       const p = digits(raw);
       if (!p || seen.has(p)) continue;
+      if (!phoneMatchesBrFilter(p, geoFilter)) continue;
       seen.add(p);
       targets.push({ phone: p, name: null, contact_id: null });
     }
-    if (!targets.length) throw new Error("Selecione ao menos 1 destinatário");
+    if (!targets.length) throw new Error("Nenhum destinatário após filtros (DDD/estado)");
 
     const { data: bc, error } = await context.supabase.from("broadcasts").insert({
       user_id: context.userId,
