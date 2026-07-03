@@ -474,9 +474,12 @@ export const wipeConnections = createServerFn({ method: "POST" })
       const localNames = (localRows ?? [])
         .filter((r) => r.provider === "whatsapp")
         .map((r) => instanceNameFromConnection(r));
+      const listedNames = (listed ?? [])
+        .map((raw: any) => instanceNameFromEvolutionRow(raw))
+        .filter((name: string | null): name is string => Boolean(name));
       const names = new Set<string>([
         ...localNames,
-        ...(listed ?? []).map((raw: any) => instanceNameFromEvolutionRow(raw)).filter(Boolean) as string[],
+        ...listedNames,
       ]);
       for (const name of names) {
         const ok = await removeEvolutionBestEffort(evolution, name);
