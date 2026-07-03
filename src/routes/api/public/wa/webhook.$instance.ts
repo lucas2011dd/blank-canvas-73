@@ -143,6 +143,14 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               }).eq("id", conn.id);
               return new Response("ok");
             }
+
+            // Um QR atrasado/transitório não deve derrubar uma sessão que o
+            // ConnectHub já conhece como online quando a Evolution não confirma
+            // o estado atual. Só trocamos para QR quando a checagem real responde.
+            if (!resolved && conn.status === "online") {
+              return new Response("ok");
+            }
+
             const qrImage = await extractQrImage(data);
             if (qrImage) {
               await supabaseAdmin.from("connections").update({
