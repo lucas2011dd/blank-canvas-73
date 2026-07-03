@@ -124,6 +124,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const deadline = Date.now() + Math.max(2_000, budgetMs);
         const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
         const migResults: any[] = [];
+        const migrationConnectionsTouched = new Set<string>();
 
         let pass = 0;
         while (Date.now() < deadline && pass < 500) {
@@ -312,9 +313,11 @@ export const Route = createFileRoute("/api/public/wa/tick")({
 
           // -------- Migrações de grupo devidas --------
           const { data: migs } = await supabaseAdmin.from("group_migrations")
-            .select("id").eq("status", "running").lte("next_attempt_at", nowIsoPass).limit(5);
+            .select("id,connection_id").eq("status", "running").lte("next_attempt_at", nowIsoPass).limit(5);
           for (const m of migs ?? []) {
             if (Date.now() >= deadline) break;
+            if (migrationConnectionsTouched.has(m.connection_id)) continue;
+            migrationConnectionsTouched.add(m.connection_id);
             try {
               const r = await processGroupMigrationBatch(supabaseAdmin, m.id);
               migResults.push(r);
