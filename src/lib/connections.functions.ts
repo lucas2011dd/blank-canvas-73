@@ -271,16 +271,24 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       }
     }
 
-    const patch = {
+    // Clique manual em "Reconectar" reativa o auto-reconnect e limpa o flag
+    // de desconexão manual — o usuário quer que a instância volte a rodar.
+    const { clearManualDisconnect, persistSessionSnapshot } = await import("@/lib/session-store.server");
+    await clearManualDisconnect(context.supabase, data.id);
+
+    const patch: Record<string, unknown> = {
       status,
       qr_code: qrBase64,
       last_sync_at: new Date().toISOString(),
+      disconnected_manually: false,
+      auto_reconnect: true,
       metadata: {
         ...existingMeta,
         evolution_instance: name,
         evolution_state: state ?? status,
       },
     };
+    if (status === "online") patch.last_seen_online_at = new Date().toISOString();
 
     const { data: row, error } = await context.supabase
       .from("connections")
@@ -297,6 +305,13 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       if (!existing) throw new Error(error.message);
       return { ...existing, ...patch };
     }
+
+    await persistSessionSnapshot(context.supabase, data.id, {
+      instanceName: name,
+      status,
+      state,
+    }).catch(() => null);
+
     return row;
   });
 
