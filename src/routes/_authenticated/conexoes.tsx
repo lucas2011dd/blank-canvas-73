@@ -100,7 +100,7 @@ function Page() {
     onSuccess: (row: any) => {
       if (row?.qr_code) setQr(row.qr_code);
       else if (row?.status === "online") toast.success("WhatsApp já está online.");
-      else toast.error("A Evolution não retornou QR nesta tentativa. A instância foi recriada; clique em Reconectar novamente se necessário.");
+      else toast.info("Reconexão silenciosa iniciada; mantive a instância atual sem recriar nem gerar QR automático.");
       qc.invalidateQueries({ queryKey: ["connections"] });
     },
     onError: (e) => toast.error(e.message),
