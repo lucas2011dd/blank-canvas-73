@@ -22,8 +22,11 @@ import { Route as AuthenticatedContatosRouteImport } from './routes/_authenticat
 import { Route as AuthenticatedConfiguracoesRouteImport } from './routes/_authenticated/configuracoes'
 import { Route as AuthenticatedConexoesRouteImport } from './routes/_authenticated/conexoes'
 import { Route as AuthenticatedChatRouteImport } from './routes/_authenticated/chat'
+import { Route as AuthenticatedBroadcastsRouteImport } from './routes/_authenticated/broadcasts'
+import { Route as AuthenticatedAgendamentosRouteImport } from './routes/_authenticated/agendamentos'
 import { Route as ApiGoogleCallbackRouteImport } from './routes/api/google/callback'
 import { Route as ApiGoogleAuthorizeRouteImport } from './routes/api/google/authorize'
+import { Route as ApiPublicWaTickRouteImport } from './routes/api/public/wa/tick'
 import { Route as ApiPublicWaWebhookInstanceRouteImport } from './routes/api/public/wa/webhook.$instance'
 
 const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
@@ -92,6 +95,17 @@ const AuthenticatedChatRoute = AuthenticatedChatRouteImport.update({
   path: '/chat',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedBroadcastsRoute = AuthenticatedBroadcastsRouteImport.update({
+  id: '/broadcasts',
+  path: '/broadcasts',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAgendamentosRoute =
+  AuthenticatedAgendamentosRouteImport.update({
+    id: '/agendamentos',
+    path: '/agendamentos',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const ApiGoogleCallbackRoute = ApiGoogleCallbackRouteImport.update({
   id: '/api/google/callback',
   path: '/api/google/callback',
@@ -100,6 +114,11 @@ const ApiGoogleCallbackRoute = ApiGoogleCallbackRouteImport.update({
 const ApiGoogleAuthorizeRoute = ApiGoogleAuthorizeRouteImport.update({
   id: '/api/google/authorize',
   path: '/api/google/authorize',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicWaTickRoute = ApiPublicWaTickRouteImport.update({
+  id: '/api/public/wa/tick',
+  path: '/api/public/wa/tick',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiPublicWaWebhookInstanceRoute =
@@ -114,6 +133,8 @@ export interface FileRoutesByFullPath {
   '/auth': typeof AuthRoute
   '/reset-password': typeof ResetPasswordRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/agendamentos': typeof AuthenticatedAgendamentosRoute
+  '/broadcasts': typeof AuthenticatedBroadcastsRoute
   '/chat': typeof AuthenticatedChatRoute
   '/conexoes': typeof AuthenticatedConexoesRoute
   '/configuracoes': typeof AuthenticatedConfiguracoesRoute
@@ -124,6 +145,7 @@ export interface FileRoutesByFullPath {
   '/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
+  '/api/public/wa/tick': typeof ApiPublicWaTickRoute
   '/api/public/wa/webhook/$instance': typeof ApiPublicWaWebhookInstanceRoute
 }
 export interface FileRoutesByTo {
@@ -131,6 +153,8 @@ export interface FileRoutesByTo {
   '/auth': typeof AuthRoute
   '/reset-password': typeof ResetPasswordRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/agendamentos': typeof AuthenticatedAgendamentosRoute
+  '/broadcasts': typeof AuthenticatedBroadcastsRoute
   '/chat': typeof AuthenticatedChatRoute
   '/conexoes': typeof AuthenticatedConexoesRoute
   '/configuracoes': typeof AuthenticatedConfiguracoesRoute
@@ -141,6 +165,7 @@ export interface FileRoutesByTo {
   '/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
+  '/api/public/wa/tick': typeof ApiPublicWaTickRoute
   '/api/public/wa/webhook/$instance': typeof ApiPublicWaWebhookInstanceRoute
 }
 export interface FileRoutesById {
@@ -150,6 +175,8 @@ export interface FileRoutesById {
   '/auth': typeof AuthRoute
   '/reset-password': typeof ResetPasswordRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/_authenticated/agendamentos': typeof AuthenticatedAgendamentosRoute
+  '/_authenticated/broadcasts': typeof AuthenticatedBroadcastsRoute
   '/_authenticated/chat': typeof AuthenticatedChatRoute
   '/_authenticated/conexoes': typeof AuthenticatedConexoesRoute
   '/_authenticated/configuracoes': typeof AuthenticatedConfiguracoesRoute
@@ -160,6 +187,7 @@ export interface FileRoutesById {
   '/_authenticated/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
+  '/api/public/wa/tick': typeof ApiPublicWaTickRoute
   '/api/public/wa/webhook/$instance': typeof ApiPublicWaWebhookInstanceRoute
 }
 export interface FileRouteTypes {
@@ -169,6 +197,8 @@ export interface FileRouteTypes {
     | '/auth'
     | '/reset-password'
     | '/sitemap.xml'
+    | '/agendamentos'
+    | '/broadcasts'
     | '/chat'
     | '/conexoes'
     | '/configuracoes'
@@ -179,6 +209,7 @@ export interface FileRouteTypes {
     | '/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
+    | '/api/public/wa/tick'
     | '/api/public/wa/webhook/$instance'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -186,6 +217,8 @@ export interface FileRouteTypes {
     | '/auth'
     | '/reset-password'
     | '/sitemap.xml'
+    | '/agendamentos'
+    | '/broadcasts'
     | '/chat'
     | '/conexoes'
     | '/configuracoes'
@@ -196,6 +229,7 @@ export interface FileRouteTypes {
     | '/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
+    | '/api/public/wa/tick'
     | '/api/public/wa/webhook/$instance'
   id:
     | '__root__'
@@ -204,6 +238,8 @@ export interface FileRouteTypes {
     | '/auth'
     | '/reset-password'
     | '/sitemap.xml'
+    | '/_authenticated/agendamentos'
+    | '/_authenticated/broadcasts'
     | '/_authenticated/chat'
     | '/_authenticated/conexoes'
     | '/_authenticated/configuracoes'
@@ -214,6 +250,7 @@ export interface FileRouteTypes {
     | '/_authenticated/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
+    | '/api/public/wa/tick'
     | '/api/public/wa/webhook/$instance'
   fileRoutesById: FileRoutesById
 }
@@ -225,6 +262,7 @@ export interface RootRouteChildren {
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
   ApiGoogleAuthorizeRoute: typeof ApiGoogleAuthorizeRoute
   ApiGoogleCallbackRoute: typeof ApiGoogleCallbackRoute
+  ApiPublicWaTickRoute: typeof ApiPublicWaTickRoute
   ApiPublicWaWebhookInstanceRoute: typeof ApiPublicWaWebhookInstanceRoute
 }
 
@@ -321,6 +359,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedChatRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/broadcasts': {
+      id: '/_authenticated/broadcasts'
+      path: '/broadcasts'
+      fullPath: '/broadcasts'
+      preLoaderRoute: typeof AuthenticatedBroadcastsRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/agendamentos': {
+      id: '/_authenticated/agendamentos'
+      path: '/agendamentos'
+      fullPath: '/agendamentos'
+      preLoaderRoute: typeof AuthenticatedAgendamentosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/api/google/callback': {
       id: '/api/google/callback'
       path: '/api/google/callback'
@@ -335,6 +387,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiGoogleAuthorizeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/wa/tick': {
+      id: '/api/public/wa/tick'
+      path: '/api/public/wa/tick'
+      fullPath: '/api/public/wa/tick'
+      preLoaderRoute: typeof ApiPublicWaTickRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/wa/webhook/$instance': {
       id: '/api/public/wa/webhook/$instance'
       path: '/api/public/wa/webhook/$instance'
@@ -346,6 +405,8 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedAgendamentosRoute: typeof AuthenticatedAgendamentosRoute
+  AuthenticatedBroadcastsRoute: typeof AuthenticatedBroadcastsRoute
   AuthenticatedChatRoute: typeof AuthenticatedChatRoute
   AuthenticatedConexoesRoute: typeof AuthenticatedConexoesRoute
   AuthenticatedConfiguracoesRoute: typeof AuthenticatedConfiguracoesRoute
@@ -357,6 +418,8 @@ interface AuthenticatedRouteRouteChildren {
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedAgendamentosRoute: AuthenticatedAgendamentosRoute,
+  AuthenticatedBroadcastsRoute: AuthenticatedBroadcastsRoute,
   AuthenticatedChatRoute: AuthenticatedChatRoute,
   AuthenticatedConexoesRoute: AuthenticatedConexoesRoute,
   AuthenticatedConfiguracoesRoute: AuthenticatedConfiguracoesRoute,
@@ -378,6 +441,7 @@ const rootRouteChildren: RootRouteChildren = {
   SitemapDotxmlRoute: SitemapDotxmlRoute,
   ApiGoogleAuthorizeRoute: ApiGoogleAuthorizeRoute,
   ApiGoogleCallbackRoute: ApiGoogleCallbackRoute,
+  ApiPublicWaTickRoute: ApiPublicWaTickRoute,
   ApiPublicWaWebhookInstanceRoute: ApiPublicWaWebhookInstanceRoute,
 }
 export const routeTree = rootRouteImport

@@ -26,9 +26,23 @@ export const Route = createFileRoute("/api/google/callback")({
         if (!tokRes.ok) return new Response("Google token exchange failed", { status: 502 });
         const tokens = await tokRes.json() as { access_token: string; refresh_token?: string; expires_in: number; scope: string };
 
-        // Redireciona de volta com fragmento (o front pode persistir via server-fn autenticada).
+        // Recupera user_id via cookie de sessão Supabase (state=userId enviado por segurança).
+        const userId = url.searchParams.get("state");
+        if (userId) {
+          try {
+            const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+            await supabaseAdmin.from("google_tokens").upsert({
+              user_id: userId,
+              access_token: tokens.access_token,
+              refresh_token: tokens.refresh_token ?? null,
+              expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+              scope: tokens.scope,
+            });
+          } catch (e) { console.error("[google] save tokens", e); }
+        }
+
         const dest = new URL("/configuracoes", url.origin);
-        dest.hash = `google=connected&expires_in=${tokens.expires_in}`;
+        dest.hash = `google=connected`;
         return Response.redirect(dest.toString(), 302);
       },
     },
