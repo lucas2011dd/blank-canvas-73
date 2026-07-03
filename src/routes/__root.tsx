@@ -78,8 +78,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "twitter:card", content: "summary_large_image" },
       { name: "twitter:title", content: "ConnectHub — SaaS de Conexões, Chat e Contatos" },
       { name: "twitter:description", content: "Plataforma SaaS completa para gerenciar conexões, contatos e conversas em tempo real. Auto-hospedável, seguro e integrado ao Google Contacts e WhatsApp." },
-      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/6f02d220-382e-4281-9e65-00ff3bcea482/id-preview-de5c920b--b479563e-8226-4af6-94f1-4cb51bdee5f7.lovable.app-1783075234784.png" },
-      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/6f02d220-382e-4281-9e65-00ff3bcea482/id-preview-de5c920b--b479563e-8226-4af6-94f1-4cb51bdee5f7.lovable.app-1783075234784.png" },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/8732cb15-cb23-494e-ba53-2c0048c82140/id-preview-f728e59b--b479563e-8226-4af6-94f1-4cb51bdee5f7.lovable.app-1783075675946.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/8732cb15-cb23-494e-ba53-2c0048c82140/id-preview-f728e59b--b479563e-8226-4af6-94f1-4cb51bdee5f7.lovable.app-1783075675946.png" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
