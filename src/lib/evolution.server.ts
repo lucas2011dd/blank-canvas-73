@@ -450,6 +450,29 @@ export function evolutionStateToStatus(state?: string): EvolutionConnectionStatu
   return "offline";
 }
 
+function payloadIndicatesPairingLost(source: unknown): boolean {
+  const haystack = (() => {
+    try {
+      return JSON.stringify(source).toLowerCase();
+    } catch {
+      return String(source ?? "").toLowerCase();
+    }
+  })();
+  return (
+    haystack.includes("device_removed") ||
+    haystack.includes("logged_out") ||
+    haystack.includes("logged out") ||
+    haystack.includes("logout") ||
+    haystack.includes("not_connected") ||
+    haystack.includes("not connected") ||
+    haystack.includes("unpaired") ||
+    haystack.includes("statusreason\":401") ||
+    haystack.includes("statusreason:401") ||
+    haystack.includes("disconnectreason\":401") ||
+    haystack.includes("stream:error") && haystack.includes("401")
+  );
+}
+
 export async function resolveEvolutionStatus(instanceName: string): Promise<{
   status: EvolutionConnectionStatus;
   state?: string;
@@ -461,6 +484,9 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
   try {
     const rawState = await evolution.state(instanceName);
     state = extractEvolutionConnectionState(rawState);
+    if (payloadIndicatesPairingLost(rawState)) {
+      return { status: "offline", state: state ?? "device_removed", usable: false };
+    }
     statusFromState = evolutionStateToStatus(state);
     if (statusFromState === "online") return { status: "online", state, usable: true };
   } catch (error) {
@@ -478,6 +504,9 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
   if (infoLookupFailed && stateError) throw stateError;
   if (info === undefined) return { status: statusFromState, state: state ?? statusFromState, usable: false };
   const infoState = extractEvolutionConnectionState(info);
+  if (payloadIndicatesPairingLost(info)) {
+    return { status: "offline", state: infoState ?? state ?? "device_removed", usable: false };
+  }
   const infoStatus = evolutionStateToStatus(infoState);
   if (infoStatus === "online") return { status: "online", state: infoState, usable: true };
   if (infoStatus === "connecting") return { status: "connecting", state: infoState, usable: false };
