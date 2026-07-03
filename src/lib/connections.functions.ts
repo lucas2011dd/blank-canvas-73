@@ -17,6 +17,28 @@ function digitsOnly(v: unknown): string {
   return String(v ?? "").replace(/\D/g, "");
 }
 
+function safeToIso(ts: unknown): string {
+  const now = new Date().toISOString();
+  if (ts == null || ts === "") return now;
+  if (ts instanceof Date) return isNaN(ts.getTime()) ? now : ts.toISOString();
+  if (typeof ts === "number" && Number.isFinite(ts)) {
+    const ms = ts < 1e12 ? ts * 1000 : ts;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? now : d.toISOString();
+  }
+  const s = String(ts).trim();
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    const ms = s.length <= 10 ? n * 1000 : n;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? now : d.toISOString();
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? now : d.toISOString();
+}
+
+
+
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -293,14 +315,12 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
       const phone = digitsOnly(jid.split("@")[0]);
       if (!phone || seenTitles.has(phone)) continue;
       seenTitles.add(phone);
-      const ts = ch.updatedAt ?? ch.lastMessageTimestamp;
+      const ts = ch.updatedAt ?? ch.lastMessageTimestamp ?? ch.t ?? ch.messageTimestamp;
       convRows.push({
         user_id: context.userId,
         connection_id: data.id,
         title: phone,
-        last_message_at: ts
-          ? new Date(Number(ts) * (String(ts).length <= 10 ? 1000 : 1)).toISOString()
-          : new Date().toISOString(),
+        last_message_at: safeToIso(ts),
       });
     }
     if (convRows.length) {
