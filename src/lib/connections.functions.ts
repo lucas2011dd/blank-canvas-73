@@ -157,51 +157,56 @@ export const reconnectConnection = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
-    // garante que a instância existe (idempotente) e busca o QR
+    // Reconexão NÃO destrutiva: nunca apaga/recria uma sessão existente aqui.
+    // Apagar a instância força o WhatsApp a pedir QR de novo e foi a causa de
+    // sessões ainda válidas caírem apenas dentro do ConnectHub.
     const { evolution, extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
-    const name = instanceNameFor(data.id);
+    const { data: existing } = await context.supabase
+      .from("connections")
+      .select("metadata,status")
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (!existing) throw new Error("Conexão não encontrada");
 
-    // tenta criar (se já existir a Evolution retorna erro — ignoramos)
-    const created = await evolution.createInstance(name, webhookUrl(name)).catch(() => null);
+    const existingMeta = (existing.metadata as Record<string, unknown> | null) ?? {};
+    const name = typeof existingMeta.evolution_instance === "string"
+      ? existingMeta.evolution_instance
+      : instanceNameFor(data.id);
 
     let qrBase64: string | null = null;
-    let status: "online" | "offline" | "connecting" = "connecting";
+    let status: "online" | "offline" | "connecting" = existing.status as "online" | "offline" | "connecting";
+    let state: string | undefined;
 
-    // Primeiro confere a sessão real: a Evolution pode devolver QR mesmo quando
-    // o celular ainda mostra o aparelho vinculado e os contatos/chats existem.
     try {
       const resolved = await resolveEvolutionStatus(name);
       status = resolved.status;
-    } catch { /* ignore */ }
+      state = resolved.state;
+    } catch {
+      throw new Error("Servidor WhatsApp indisponível no momento; mantive a sessão atual sem gerar novo QR.");
+    }
 
     if (status !== "online") {
-      qrBase64 = await extractQrImage(created);
+      const connected = await evolution.connect(name).catch(() => null);
+      qrBase64 = await extractQrImage(connected);
+      if (!qrBase64) {
+        const info = await evolution.instanceInfoStrict(name).catch(() => undefined);
+        if (info === null) {
+          const created = await evolution.createInstance(name, webhookUrl(name)).catch(() => null);
+          qrBase64 = await extractQrImage(created);
+        }
+      }
       if (!qrBase64) qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
       if (qrBase64) {
         const resolvedAfterQr = await resolveEvolutionStatus(name).catch(() => null);
         if (resolvedAfterQr?.status === "online") {
           status = "online";
           qrBase64 = null;
+          state = resolvedAfterQr.state;
+        } else {
+          status = "connecting";
+          state = resolvedAfterQr?.state ?? "qr_required";
         }
-      }
-    }
-
-    // Instâncias antigas/presas às vezes não devolvem QR no /connect.
-    // Se não estiver online, recria a instância e pede um QR novo.
-    if (!qrBase64 && status !== "online") {
-      await evolution.logout(name).catch(() => null);
-      await evolution.remove(name).catch(() => null);
-      const recreated = await evolution.createInstance(name, webhookUrl(name)).catch(() => null);
-      qrBase64 = await extractQrImage(recreated);
-      if (!qrBase64) {
-        qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
-      }
-      const resolvedAfterRecreate = await resolveEvolutionStatus(name).catch(() => null);
-      if (resolvedAfterRecreate?.status === "online") {
-        status = "online";
-        qrBase64 = null;
-      } else {
-        status = qrBase64 ? "connecting" : "offline";
       }
     }
 
@@ -209,7 +214,11 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       status,
       qr_code: qrBase64,
       last_sync_at: new Date().toISOString(),
-      metadata: { evolution_instance: name },
+      metadata: {
+        ...existingMeta,
+        evolution_instance: name,
+        evolution_state: state ?? status,
+      },
     };
 
     const { data: row, error } = await context.supabase
@@ -235,27 +244,33 @@ export const refreshConnectionStatus = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
     const { resolveEvolutionStatus } = await import("@/lib/evolution.server");
-    const name = instanceNameFor(data.id);
-    let status: "online" | "offline" | "connecting" = "offline";
+    const { data: existing } = await context.supabase
+      .from("connections")
+      .select("metadata,status")
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (!existing) throw new Error("Conexão não encontrada");
+
+    const existingMeta = (existing.metadata as Record<string, unknown> | null) ?? {};
+    const name = typeof existingMeta.evolution_instance === "string"
+      ? existingMeta.evolution_instance
+      : instanceNameFor(data.id);
+    let status: "online" | "offline" | "connecting" = existing.status as "online" | "offline" | "connecting";
     let state: string | undefined;
     try {
       const resolved = await resolveEvolutionStatus(name);
       status = resolved.status;
       state = resolved.state;
-    } catch { /* ignore */ }
-
-    const { data: existing } = await context.supabase
-      .from("connections")
-      .select("metadata")
-      .eq("id", data.id)
-      .eq("user_id", context.userId)
-      .maybeSingle();
+    } catch {
+      return { id: data.id, status, metadata: existingMeta, unchanged: true };
+    }
 
     const patch: Record<string, unknown> = {
       status,
       last_sync_at: new Date().toISOString(),
       metadata: {
-        ...((existing?.metadata as Record<string, unknown> | null) ?? {}),
+        ...existingMeta,
         evolution_instance: name,
         evolution_state: state ?? status,
       },
