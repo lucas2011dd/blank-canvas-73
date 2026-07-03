@@ -145,7 +145,7 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
           } else if (event === "qrcode.updated" || event === "QRCODE_UPDATED") {
             const { extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
             const resolved = await resolveEvolutionStatus(instanceName).catch(() => null);
-            const [{ count: activeBroadcasts }, { count: activeMigrations }, { count: activeScheduled }] = await Promise.all([
+            const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
               supabaseAdmin.from("broadcasts")
                 .select("id", { count: "exact", head: true })
                 .eq("connection_id", conn.id)
@@ -154,12 +154,8 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                 .select("id", { count: "exact", head: true })
                 .eq("connection_id", conn.id)
                 .eq("status", "running"),
-              supabaseAdmin.from("scheduled_messages")
-                .select("id", { count: "exact", head: true })
-                .eq("connection_id", conn.id)
-                .eq("status", "pending"),
             ]);
-            const hasActiveAutomation = Boolean((activeBroadcasts ?? 0) + (activeMigrations ?? 0) + (activeScheduled ?? 0));
+            const hasActiveAutomation = Boolean((activeBroadcasts ?? 0) + (activeMigrations ?? 0));
             if (resolved?.status === "online") {
               await supabaseAdmin.from("connections").update({
                 status: "online",
@@ -174,7 +170,7 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               return new Response("ok");
             }
 
-            // Durante migrações/disparos/agendamentos, QR vindo da Evolution não
+            // Durante migrações/disparos contínuos, QR vindo da Evolution não
             // deve substituir a sessão: pausamos em "connecting" e deixamos o
             // tick tentar restart/reload sem pedir novo escaneamento.
             if (hasActiveAutomation) {
