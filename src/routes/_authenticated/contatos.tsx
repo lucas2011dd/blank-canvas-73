@@ -15,10 +15,14 @@ import { createContact, deleteContact, listContacts } from "@/lib/contacts.funct
 import { listConnections } from "@/lib/connections.functions";
 
 const q = queryOptions({ queryKey: ["contacts"], queryFn: () => listContacts({ data: {} }) });
+const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
 
 export const Route = createFileRoute("/_authenticated/contatos")({
   head: () => ({ meta: [{ title: "Contatos — ConnectHub" }] }),
-  loader: ({ context }) => context.queryClient.ensureQueryData(q),
+  loader: ({ context }) => Promise.all([
+    context.queryClient.ensureQueryData(q),
+    context.queryClient.ensureQueryData(connQ),
+  ]),
   component: Page,
   errorComponent: ({ error }) => <div className="text-destructive">Erro: {error.message}</div>,
   notFoundComponent: () => <div>Não encontrado</div>,
