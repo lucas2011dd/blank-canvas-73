@@ -38,24 +38,33 @@ export const Route = createFileRoute("/api/public/wa/tick")({
 
         // Repara webhooks e reconcilia o status real da Evolution (evita ficar
         // "connecting" quando o celular já apareceu como conectado).
+        // Também varremos conexões offline com `auto_reconnect=true` e
+        // `disconnected_manually=false` — só um "Desconectar" manual do
+        // usuário interrompe a reconexão automática.
         const { data: webhookConns } = await supabaseAdmin.from("connections")
-          .select("id,status,metadata")
+          .select("id,status,metadata,disconnected_manually,auto_reconnect")
           .eq("provider", "whatsapp")
-          .in("status", ["online", "connecting"])
-          .limit(20);
+          .or("status.eq.online,status.eq.connecting,and(status.eq.offline,disconnected_manually.eq.false,auto_reconnect.eq.true)")
+          .limit(40);
         const { isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+        const { persistSessionSnapshot } = await import("@/lib/session-store.server");
         for (const conn of webhookConns ?? []) {
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
           const wh = buildWebhookUrl(instance);
           if (wh) await evolution.setWebhook(instance, wh).catch(() => null);
           try {
-            const resolved = await resolveEvolutionStatus(instance);
+            let resolved = await resolveEvolutionStatus(instance);
+            // Auto-reconexão silenciosa (restart/reload — nunca /connect).
+            if (resolved.status !== "online" && conn.disconnected_manually !== true) {
+              const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
+              if (recovered) resolved = recovered;
+            }
             const evState = resolved.state;
             const realStatus = resolved.status;
             if (realStatus !== conn.status) {
               await supabaseAdmin.from("connections").update({
                 status: realStatus,
-                ...(realStatus === "online" ? { qr_code: null } : {}),
+                ...(realStatus === "online" ? { qr_code: null, last_seen_online_at: new Date().toISOString() } : {}),
                 last_sync_at: new Date().toISOString(),
                 metadata: {
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
@@ -64,6 +73,13 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                   reconciled_at: new Date().toISOString(),
                 },
               }).eq("id", conn.id);
+            }
+            if (realStatus === "online") {
+              await persistSessionSnapshot(supabaseAdmin, conn.id, {
+                instanceName: instance,
+                status: "online",
+                state: evState,
+              }).catch(() => null);
             }
           } catch { /* ignora falha transitória */ }
         }

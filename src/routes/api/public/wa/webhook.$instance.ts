@@ -68,11 +68,21 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                 status_reason: data.statusReason ?? data.reason ?? null,
                 disconnected_at: status === "offline" ? new Date().toISOString() : null,
               },
-              ...(status === "online" ? { qr_code: null } : {}),
+              ...(status === "online" ? { qr_code: null, last_seen_online_at: new Date().toISOString() } : {}),
             }).eq("id", conn.id);
 
-            // Ao ficar online, dispara sincronização inicial em background.
+            // Ao ficar online, dispara sincronização inicial em background e
+            // grava snapshot da sessão para reconexão silenciosa 24/7.
             if (status === "online") {
+              const ownerJid = (data.wuid ?? data.owner ?? data.ownerJid ?? (data.instance as any)?.wuid ?? null) as string | null;
+              const { persistSessionSnapshot } = await import("@/lib/session-store.server");
+              await persistSessionSnapshot(supabaseAdmin, conn.id, {
+                instanceName,
+                status: "online",
+                state,
+                ownerJid,
+                extra: { last_event: event },
+              }).catch(() => null);
               (async () => {
                 try {
                   const { evolution } = await import("@/lib/evolution.server");
