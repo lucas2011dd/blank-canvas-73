@@ -48,7 +48,7 @@ async function requeueTransientFailures(supabase: any, migrationId: string) {
     .select("id,error")
     .eq("migration_id", migrationId)
     .eq("status", "failed")
-    .or("error.ilike.%Connection Closed%,error.ilike.%Connection Close%,error.ilike.%timeout%,error.ilike.%socket%,error.eq.");
+    .or("error.ilike.%Connection Closed%,error.ilike.%Connection Close%,error.ilike.%timeout%,error.ilike.%socket%,error.ilike.%Error updating participants%,error.eq.");
 
   if (!failedRows?.length) return 0;
 
@@ -81,7 +81,9 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     .maybeSingle();
   if (!conn) throw new Error("Conexão não encontrada");
   if (conn.status !== "online") {
+    const requeued = await requeueTransientFailures(supabase, mig.id);
     await supabase.from("group_migrations").update({
+      failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
       next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
       last_error: "Conexão offline — reagendado em 5min",
     }).eq("id", mig.id);
@@ -92,8 +94,10 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   try {
     const state = await evolution.state(instance);
     if (state?.instance?.state !== "open") {
+      const requeued = await requeueTransientFailures(supabase, mig.id);
       await supabase.from("connections").update({ status: "offline" }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
       await supabase.from("group_migrations").update({
+        failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
         next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
         last_error: "Conexão WhatsApp fechada na Evolution — reconecte e o processamento continuará sem perder a fila",
       }).eq("id", mig.id);
