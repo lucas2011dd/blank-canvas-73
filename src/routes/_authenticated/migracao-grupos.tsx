@@ -156,8 +156,9 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
   const [targetSubject, setTargetSubject] = useState("");
   const [targetJid, setTargetJid] = useState("");
   const [batchSize, setBatchSize] = useState(1);
-  const [minDelay, setMinDelay] = useState(75);
-  const [maxDelay, setMaxDelay] = useState(180);
+  const [minDelay, setMinDelay] = useState(15);
+  const [maxDelay, setMaxDelay] = useState(30);
+
   const [skipAdmins, setSkipAdmins] = useState(true);
   const [skipSelf, setSkipSelf] = useState(true);
   const [shuffleOrder, setShuffleOrder] = useState(true);
