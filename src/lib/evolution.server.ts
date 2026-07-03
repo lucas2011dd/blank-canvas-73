@@ -163,20 +163,30 @@ function urlCandidates(base: string, path: string) {
 
 async function call<T = any>(
   path: string,
-  init: { method?: string; body?: unknown } = {},
+  init: { method?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<T> {
   const { base, key } = env();
   let lastError: Error | null = null;
+  const timeoutMs = init.timeoutMs ?? 15_000;
 
   for (const url of urlCandidates(base, path)) {
-    const res = await fetch(url, {
-      method: init.method ?? "GET",
-      headers: {
-        apikey: key,
-        "Content-Type": "application/json",
-      },
-      body: init.body ? JSON.stringify(init.body) : undefined,
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: init.method ?? "GET",
+        headers: {
+          apikey: key,
+          "Content-Type": "application/json",
+        },
+        body: init.body ? JSON.stringify(init.body) : undefined,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (e: any) {
+      lastError = new Error(e?.name === "TimeoutError" || e?.name === "AbortError"
+        ? `Timeout Evolution API (${timeoutMs}ms) em ${path}`
+        : String(e?.message ?? e));
+      continue;
+    }
     const text = await res.text();
     let json: any = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* pass */ }
