@@ -262,11 +262,12 @@ export const evolution = {
 
   async canReadSession(instanceName: string): Promise<boolean> {
     try {
-      await call<any>(`/chat/findChats/${encodeURIComponent(instanceName)}`, {
+      const res = await call<any>(`/chat/findChats/${encodeURIComponent(instanceName)}`, {
         method: "POST",
         body: {},
       });
-      return true;
+      const rows = Array.isArray(res) ? res : (res?.chats ?? res?.data ?? []);
+      return Array.isArray(rows) && rows.length > 0;
     } catch {
       return false;
     }
