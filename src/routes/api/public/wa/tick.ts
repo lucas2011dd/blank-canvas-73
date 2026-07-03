@@ -1,24 +1,33 @@
 // Endpoint público para "tick" de processamento — chame periodicamente via
 // cron externo (p.ex. cron-job.org a cada 1min):
-//   GET https://SEU-DOMINIO/api/public/wa/tick?secret=XXX
-// Protegido por TICK_SECRET.
-//
-// Processa:
-//   1) broadcast_targets pendentes (respeitando next_attempt_at e delay
-//      aleatório definido no broadcast — anti-ban)
-//   2) scheduled_messages com scheduled_at <= now
-//
-// Limita a até 20 mensagens por chamada para não estourar o worker.
+//   GET https://SEU-DOMINIO/api/public/wa/tick
+//   Header: X-Tick-Secret: XXX
+// Protegido por TICK_SECRET. O segredo é aceito APENAS via header
+// para não vazar em logs de proxy/CDN/referrer.
 import { createFileRoute } from "@tanstack/react-router";
+
+// Rate limit simples em memória (por IP): 60 req/min.
+const RATE: Map<string, { count: number; reset: number }> = (globalThis as any).__tickRate ??= new Map();
+function rateLimited(ip: string): boolean {
+  const now = Date.now();
+  const bucket = RATE.get(ip);
+  if (!bucket || bucket.reset < now) { RATE.set(ip, { count: 1, reset: now + 60_000 }); return false; }
+  bucket.count++;
+  return bucket.count > 60;
+}
 
 export const Route = createFileRoute("/api/public/wa/tick")({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        const ip = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+        if (rateLimited(ip)) return new Response("rate_limited", { status: 429 });
+
         const secret = process.env.TICK_SECRET ?? "";
-        const url = new URL(request.url);
-        const got = url.searchParams.get("secret") ?? request.headers.get("x-tick-secret") ?? "";
-        if (!secret || got !== secret) return new Response("unauthorized", { status: 401 });
+        const got = request.headers.get("x-tick-secret") ?? "";
+        if (!secret || got.length !== secret.length || got !== secret) {
+          return new Response("unauthorized", { status: 401 });
+        }
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
         const { evolution } = await import("@/lib/evolution.server");
