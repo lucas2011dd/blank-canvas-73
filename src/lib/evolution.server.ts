@@ -391,12 +391,10 @@ export function extractEvolutionConnectionState(source: unknown): string | undef
 
 function hasUsablePairing(source: unknown): boolean {
   const s: any = source;
-  const reason = String(s?.disconnectionReasonCode ?? s?.instance?.disconnectionReasonCode ?? "").trim();
-  const disconnectedAsLoggedOut = reason === "401" || reason === "403";
   const owner = firstString(s?.ownerJid, s?.owner, s?.profileName, s?.number, s?.instance?.ownerJid, s?.instance?.profileName);
   const counts = s?._count ?? s?.count ?? {};
   const hasSyncedRows = Number(counts?.Contact ?? counts?.contacts ?? 0) > 0 || Number(counts?.Chat ?? counts?.chats ?? 0) > 0;
-  return !disconnectedAsLoggedOut && Boolean(owner || hasSyncedRows);
+  return Boolean(owner || hasSyncedRows);
 }
 
 export function evolutionStateToStatus(state?: string): EvolutionConnectionStatus {
