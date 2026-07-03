@@ -213,7 +213,7 @@ function ConvPane({ id, connection, onBack }: { id: string; connection?: any; on
           <div className="mt-20 text-center text-sm text-muted-foreground">Nenhuma mensagem ainda.</div>
         ) : msgs.map((m) => (
           <div key={m.id} className={`flex ${m.direction === "outbound" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[70%] rounded-2xl px-3 py-2 text-sm ${m.direction === "outbound" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
+            <div className={`max-w-[85%] sm:max-w-[70%] break-words rounded-2xl px-3 py-2 text-sm ${m.direction === "outbound" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
               {m.body}
               <div className="mt-1 text-[10px] opacity-70">
                 {new Date(m.created_at).toLocaleTimeString("pt-BR")}
