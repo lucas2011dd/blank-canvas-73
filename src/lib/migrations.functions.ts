@@ -156,7 +156,7 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       // Cria com o primeiro batch — Evolution exige participantes na criação.
       const seed = allPhones.slice(0, data.batchSize);
       const created = await evolution.createGroup(instance, data.targetSubject!, seed, data.targetDescription);
-      targetGroupJid = created?.groupJid ?? created?.id ?? created?.data?.groupJid ?? created?.data?.id ?? null;
+      targetGroupJid = created?.groupJid ?? created?.id ?? created?.group?.id ?? created?.data?.groupJid ?? created?.data?.id ?? created?.data?.group?.id ?? null;
       targetSubject = data.targetSubject!;
       if (!targetGroupJid) throw new Error("Falha ao criar o grupo de destino");
 
