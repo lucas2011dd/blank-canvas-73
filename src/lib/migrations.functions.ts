@@ -9,6 +9,18 @@ function instanceNameFor(id: string) {
 const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
 const jidToPhone = (jid: string) => digits(jid.split("@")[0] ?? "");
 
+// Detecta admin de forma robusta — Evolution v2 varia entre versões:
+//  - { admin: "admin" | "superadmin" | null }
+//  - { admin: true } (booleano)
+//  - { isAdmin: bool, isSuperAdmin: bool }
+//  - { role: "admin" | "superadmin" }
+function isAdminParticipant(p: any): boolean {
+  const a = p?.admin ?? p?.role ?? null;
+  if (a === "admin" || a === "superadmin" || a === true) return true;
+  if (p?.isAdmin === true || p?.isSuperAdmin === true) return true;
+  return false;
+}
+
 // Preview de participantes do grupo de origem (sem persistir nada).
 export const previewGroupParticipants = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -26,7 +38,7 @@ export const previewGroupParticipants = createServerFn({ method: "POST" })
     const parts = await evolution.groupParticipants(instance, data.sourceGroupJid);
     const rows = parts.map((p: any) => {
       const jid = String(p.id ?? p.jid ?? "");
-      return { jid, phone: jidToPhone(jid), admin: !!p.admin };
+      return { jid, phone: jidToPhone(jid), admin: isAdminParticipant(p) };
     }).filter((r) => r.phone.length >= 8);
     return { total: rows.length, participants: rows };
   });
@@ -93,9 +105,10 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     if (data.skipSelf && ownerPhone) exclude.add(ownerPhone);
 
     const filtered = parts.filter((p: any) => {
-      if (data.skipAdmins && (p.admin === "admin" || p.admin === "superadmin" || p.admin === true)) return false;
+      if (data.skipAdmins && isAdminParticipant(p)) return false;
       return true;
     });
+
     let allPhones = Array.from(new Set(
       filtered.map((p: any) => jidToPhone(String(p.id ?? p.jid ?? "")))
         .filter((p) => p.length >= 8 && !exclude.has(p))
