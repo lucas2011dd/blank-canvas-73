@@ -59,9 +59,20 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           .eq("provider", "whatsapp")
           .or("status.eq.online,status.eq.connecting,and(status.eq.offline,disconnected_manually.eq.false,auto_reconnect.eq.true)")
           .limit(40);
+        const { data: activeMigrationConns } = await supabaseAdmin.from("group_migrations")
+          .select("connection_id")
+          .eq("status", "running")
+          .limit(100);
+        const activeMigrationConnectionIds = new Set(
+          (activeMigrationConns ?? []).map((row: any) => row.connection_id).filter(Boolean),
+        );
         const { isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
         const { persistSessionSnapshot } = await import("@/lib/session-store.server");
         for (const conn of webhookConns ?? []) {
+          // Durante migração ativa e conexão já online, não faça setWebhook,
+          // state nem fetchInstances no início do tick. Essas chamadas entre
+          // um add e o próximo sobrecarregam o WebSocket da Evolution.
+          if (conn.status === "online" && activeMigrationConnectionIds.has(conn.id)) continue;
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
           const wh = buildWebhookUrl(instance);
           if (wh) await evolution.setWebhook(instance, wh).catch(() => null);

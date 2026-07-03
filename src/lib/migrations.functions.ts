@@ -167,16 +167,10 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       targetSubject = data.targetSubject!;
       if (!targetGroupJid) throw new Error("Falha ao criar o grupo de destino");
 
-      // Verifica quem realmente entrou (privacidade/bloqueio derrubam silenciosamente).
-      try {
-        const parts = await evolution.groupParticipants(instance, targetGroupJid);
-        const joined = new Set(parts.map((p: any) => {
-          return participantPhone(p);
-        }).filter(Boolean));
-        for (const p of seed) if (joined.has(p)) initialAdded.push(p);
-      } catch {
-        // Sem verificação, assume o seed como pending — o worker tenta de novo.
-      }
+      // Não consultar participantes logo após criar/adicionar: isso pode
+      // derrubar o stream da Evolution. Se a criação retornou grupo, confiamos
+      // no retorno da API e marcamos o seed como adicionado.
+      initialAdded.push(...seed);
     }
 
     // Persiste migração
