@@ -387,11 +387,23 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
     const wh = buildWebhookUrl(name);
     if (wh) await evolution.setWebhook(name, wh);
 
-    const [contactsRaw, chatsRaw, groupsRaw] = await Promise.all([
+    const [contactsRes, chatsRes, groupsRes] = await Promise.allSettled([
       evolution.findContacts(name),
       evolution.findChats(name),
       evolution.fetchAllGroups(name),
     ]);
+    const contactsRaw = contactsRes.status === "fulfilled" ? contactsRes.value : [];
+    const chatsRaw = chatsRes.status === "fulfilled" ? chatsRes.value : [];
+    const groupsRaw = groupsRes.status === "fulfilled" ? groupsRes.value : [];
+
+    // Detecta socket morto (device_removed / Connection Closed) — sync silencioso não resolve
+    const failures = [contactsRes, chatsRes, groupsRes].filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+    const socketDead = failures.some((f) => /Connection Closed|device_removed|401/i.test(String(f.reason?.message ?? f.reason ?? "")));
+    if (socketDead && contactsRaw.length === 0 && chatsRaw.length === 0 && groupsRaw.length === 0) {
+      // Tenta um restart; se falhar, sinaliza para o usuário reparear.
+      try { await evolution.restart(name); } catch { /* noop */ }
+      throw new Error("A sessão do WhatsApp foi removida dos aparelhos conectados no seu celular. Clique em Reconectar e escaneie o QR novamente.");
+    }
 
     // ---------- Contatos ----------
     let contactsUpserted = 0;
