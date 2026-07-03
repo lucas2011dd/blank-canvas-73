@@ -384,19 +384,10 @@ export const wipeConnections = createServerFn({ method: "POST" })
   }).parse(d))
   .handler(async ({ context, data }) => {
     const { evolution } = await import("@/lib/evolution.server");
+    const withTimeout = <T,>(p: Promise<T>, ms = 4000) =>
+      Promise.race([p, new Promise<T>((_, r) => setTimeout(() => r(new Error("timeout")), ms))]);
 
-    let evolutionRemoved = 0;
-    if (data.scope === "evolution" || data.scope === "both") {
-      const list = await evolution.fetchInstances().catch(() => []);
-      for (const raw of list ?? []) {
-        const name = raw?.name ?? raw?.instanceName ?? raw?.instance?.instanceName ?? raw?.instance?.name;
-        if (!name) continue;
-        await evolution.logout(name).catch(() => null);
-        await evolution.remove(name).catch(() => null);
-        evolutionRemoved++;
-      }
-    }
-
+    // 1) ConnectHub primeiro — nunca fica travado por causa da Evolution.
     let connecthubRemoved = 0;
     if (data.scope === "connecthub" || data.scope === "both") {
       const { data: rows } = await context.supabase
@@ -406,6 +397,19 @@ export const wipeConnections = createServerFn({ method: "POST" })
         const { error } = await context.supabase.from("connections").delete().in("id", ids).eq("user_id", context.userId);
         if (error) throw new Error(error.message);
         connecthubRemoved = ids.length;
+      }
+    }
+
+    // 2) Evolution best-effort, cada instância com timeout curto.
+    let evolutionRemoved = 0;
+    if (data.scope === "evolution" || data.scope === "both") {
+      const list = await withTimeout(evolution.fetchInstances(), 6000).catch(() => [] as any[]);
+      for (const raw of list ?? []) {
+        const name = raw?.name ?? raw?.instanceName ?? raw?.instance?.instanceName ?? raw?.instance?.name;
+        if (!name) continue;
+        await withTimeout(evolution.logout(name)).catch(() => null);
+        await withTimeout(evolution.remove(name)).catch(() => null);
+        evolutionRemoved++;
       }
     }
 
