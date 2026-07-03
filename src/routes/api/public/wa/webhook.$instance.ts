@@ -41,10 +41,9 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
 
         try {
           if (event === "connection.update" || event === "CONNECTION_UPDATE") {
-            const state = data.state ?? data.status ?? "";
-            const status =
-              state === "open" ? "online" :
-              state === "connecting" ? "connecting" : "offline";
+            const { extractEvolutionConnectionState, evolutionStateToStatus } = await import("@/lib/evolution.server");
+            const state = extractEvolutionConnectionState(data) ?? data.state ?? data.status ?? "";
+            const status = evolutionStateToStatus(state);
             await supabaseAdmin.from("connections").update({
               status, last_sync_at: new Date().toISOString(),
               metadata: {
@@ -129,7 +128,22 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               })();
             }
           } else if (event === "qrcode.updated" || event === "QRCODE_UPDATED") {
-            const { extractQrImage } = await import("@/lib/evolution.server");
+            if (conn.status === "online") return new Response("ok");
+            const { extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+            const resolved = await resolveEvolutionStatus(instanceName).catch(() => null);
+            if (resolved?.status === "online") {
+              await supabaseAdmin.from("connections").update({
+                status: "online",
+                qr_code: null,
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instanceName,
+                  evolution_state: resolved.state ?? "usable_session",
+                },
+              }).eq("id", conn.id);
+              return new Response("ok");
+            }
             const qrImage = await extractQrImage(data);
             if (qrImage) {
               await supabaseAdmin.from("connections").update({
