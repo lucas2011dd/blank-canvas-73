@@ -250,13 +250,6 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     if (status !== "online" && !suppressManualQr) {
       const connected = await evolution.connect(name).catch(() => null);
       qrBase64 = await extractQrImage(connected);
-      if (!qrBase64) {
-        const info = await evolution.instanceInfoStrict(name).catch(() => undefined);
-        if (info === null) {
-          const created = await evolution.createInstance(name, buildWebhookUrl(name)).catch(() => null);
-          qrBase64 = await extractQrImage(created);
-        }
-      }
       if (!qrBase64) qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
       if (qrBase64) {
         const resolvedAfterQr = await resolveEvolutionStatus(name).catch(() => null);
@@ -266,8 +259,12 @@ export const reconnectConnection = createServerFn({ method: "POST" })
           state = resolvedAfterQr.state;
         } else {
           status = "connecting";
-          state = resolvedAfterQr?.state ?? "qr_required";
+          state = resolvedAfterQr?.state ?? "qr_required_manual";
         }
+      }
+      if (!qrBase64) {
+        status = "connecting";
+        state = state ?? "silent_reconnect_no_qr_returned";
       }
     }
 

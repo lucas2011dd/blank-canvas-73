@@ -543,7 +543,13 @@ export function isTransientEvolutionError(error: unknown): boolean {
     haystack.includes("network") ||
     haystack.includes("fetch failed") ||
     haystack.includes("evolution temporariamente") ||
-    haystack.includes("temporarily unavailable")
+    haystack.includes("temporarily unavailable") ||
+    haystack.includes("device_removed") ||
+    haystack.includes("logged_out") ||
+    haystack.includes("logged out") ||
+    haystack.includes("stream:error") && haystack.includes("401") ||
+    haystack.includes("statusreason\":401") ||
+    haystack.includes("statusreason:401")
   );
 }
 
@@ -611,7 +617,6 @@ export async function reconnectEvolutionSession(
     await wait(delayMs + attempt * 500);
     latest = await resolveEvolutionStatus(instanceName).catch(() => latest);
     if (latest.status === "online") return { ...latest, restarted: true };
-    if (payloadIndicatesPairingLost(latest.state)) break;
     if (allowConnect && attempt === 0) {
       await evolution.connect(instanceName).catch(() => undefined);
     }

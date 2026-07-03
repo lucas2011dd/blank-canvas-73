@@ -61,15 +61,17 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             }
             const evState = resolved.state;
             const realStatus = resolved.status;
-            if (realStatus !== conn.status) {
+            const storedStatus = realStatus === "offline" && conn.disconnected_manually !== true ? "connecting" : realStatus;
+            if (storedStatus !== conn.status) {
               await supabaseAdmin.from("connections").update({
-                status: realStatus,
-                ...(realStatus === "online" ? { qr_code: null, last_seen_online_at: new Date().toISOString() } : {}),
+                status: storedStatus,
+                ...(realStatus === "online" ? { qr_code: null, last_seen_online_at: new Date().toISOString() } : { qr_code: null }),
                 last_sync_at: new Date().toISOString(),
                 metadata: {
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
                   evolution_instance: instance,
-                  evolution_state: evState,
+                  evolution_state: realStatus === "offline" && conn.disconnected_manually !== true ? "silent_reconnect_pending" : evState,
+                  last_evolution_state: evState,
                   reconciled_at: new Date().toISOString(),
                 },
               }).eq("id", conn.id);
