@@ -38,7 +38,7 @@ export const previewGroupParticipants = createServerFn({ method: "POST" })
     const parts = await evolution.groupParticipants(instance, data.sourceGroupJid);
     const rows = parts.map((p: any) => {
       const jid = String(p.id ?? p.jid ?? "");
-      return { jid, phone: jidToPhone(jid), admin: !!p.admin };
+      return { jid, phone: jidToPhone(jid), admin: isAdminParticipant(p) };
     }).filter((r) => r.phone.length >= 8);
     return { total: rows.length, participants: rows };
   });
