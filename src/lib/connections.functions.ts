@@ -79,8 +79,9 @@ async function removeEvolutionBestEffort(evolution: typeof import("@/lib/evoluti
     Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
   await withTimeout(evolution.logout(instanceName)).catch(() => null);
   await withTimeout(evolution.remove(instanceName)).catch(() => null);
-  const stillExists = await withTimeout(evolution.instanceInfo(instanceName), 5_000).catch(() => null);
-  return !stillExists;
+  const list = await withTimeout(evolution.fetchInstancesStrict(), 5_000).catch(() => null);
+  if (!Array.isArray(list)) return false;
+  return !list.some((raw: any) => instanceNameFromEvolutionRow(raw) === instanceName);
 }
 
 async function cleanupDb(preferred: any) {
