@@ -76,22 +76,25 @@ export const runScheduledNow = createServerFn({ method: "POST" })
 
     const { data: conn } = await context.supabase.from("connections")
       .select("id,status,metadata").eq("id", row.connection_id).single();
-    if (!conn || conn.status !== "online") throw new Error("Conexão offline");
+    if (!conn) throw new Error("Conexão não encontrada");
     const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
 
-    const { evolution, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const { evolution, isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
     const resolved = await resolveEvolutionStatus(instance);
     if (resolved.status !== "online") {
+      const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
       await context.supabase.from("connections").update({
-        status: resolved.status,
+        status: recovered?.status ?? resolved.status,
+        ...(recovered?.status === "online" ? { qr_code: null } : {}),
         last_sync_at: new Date().toISOString(),
         metadata: {
           ...((conn.metadata as Record<string, unknown> | null) ?? {}),
           evolution_instance: instance,
-          evolution_state: resolved.state ?? resolved.status,
+          evolution_state: recovered?.state ?? resolved.state ?? resolved.status,
+          auto_reconnect_at: new Date().toISOString(),
         },
       }).eq("id", conn.id).eq("user_id", context.userId);
-      throw new Error("Conexão offline");
+      if (recovered?.status !== "online") throw new Error("Reconectando WhatsApp sem novo QR; tente novamente em instantes");
     }
     const target = row.target_kind === "group" ? row.target : row.target;
     try {
@@ -111,6 +114,27 @@ export const runScheduledNow = createServerFn({ method: "POST" })
       }
       return { ok: true };
     } catch (e: any) {
+      if (isTransientEvolutionError(e)) {
+        const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
+        await context.supabase.from("connections").update({
+          status: recovered?.status ?? "connecting",
+          ...(recovered?.status === "online" ? { qr_code: null } : {}),
+          last_sync_at: new Date().toISOString(),
+          metadata: {
+            ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+            evolution_instance: instance,
+            evolution_state: recovered?.state ?? "reconnecting",
+            auto_reconnect_at: new Date().toISOString(),
+          },
+        }).eq("id", conn.id).eq("user_id", context.userId);
+        await context.supabase.from("scheduled_messages").update({
+          status: "pending",
+          scheduled_at: new Date(Date.now() + 30_000).toISOString(),
+          last_error: "Reconectando WhatsApp sem novo QR; envio será tentado novamente",
+          attempts: (row.attempts ?? 0) + 1,
+        }).eq("id", row.id);
+        throw new Error("Reconectando WhatsApp sem novo QR; envio mantido na fila");
+      }
       await context.supabase.from("scheduled_messages").update({
         status: "failed", last_error: e?.message ?? "erro", attempts: (row.attempts ?? 0) + 1,
       }).eq("id", row.id);
