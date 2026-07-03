@@ -17,6 +17,7 @@ import {
   controlGroupMigration, listGroupMigrations, previewGroupParticipants,
   runGroupMigrationNow, startGroupMigration,
 } from "@/lib/migrations.functions";
+import { BrGeoFilter } from "@/components/br-geo-filter";
 
 const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
 const migQ = queryOptions({ queryKey: ["group-migrations"], queryFn: () => listGroupMigrations() });
@@ -273,9 +274,11 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
           </div>
         </div>
 
+        <BrGeoFilter states={filterStates} setStates={setFilterStates} ddds={filterDdds} setDdds={setFilterDdds} />
+
         <p className="text-xs text-muted-foreground">
-          <b>Anti-restrição:</b> adiciona {batchSize} contato(s) por vez com delay aleatório entre {minDelay}–{maxDelay}s.
-          Recomendado: batch ≤ 3 e delay ≥ 45s para grupos grandes; contas novas devem usar valores maiores.
+          <b>100% automático:</b> a migração roda 24/7 pelo tick (~1/min) — não precisa clicar em "Batch agora".
+          Adiciona {batchSize} contato(s) por lote com delay {minDelay}–{maxDelay}s. Recomendado: batch ≤ 3 e delay ≥ 45s.
         </p>
       </div>
       <DialogFooter>
@@ -293,6 +296,7 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
             excludePhones: [],
             skipAdmins, skipSelf, shuffleOrder,
             maxParticipants: maxParticipants === "" ? undefined : Number(maxParticipants),
+            filterStates, filterDdds,
           } })}
         >
           {start.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
