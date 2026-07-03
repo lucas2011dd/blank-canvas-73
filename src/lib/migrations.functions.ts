@@ -138,11 +138,23 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     if (data.mode === "new_group") {
       // Cria com o primeiro batch — Evolution exige participantes na criação.
       const seed = allPhones.slice(0, data.batchSize);
-      const created = await evolution.createGroup(instance, data.targetSubject!, seed, data.targetDescription);
+      const seedJids = seed.map((p) => `${p}@s.whatsapp.net`);
+      const created = await evolution.createGroup(instance, data.targetSubject!, seedJids, data.targetDescription);
       targetGroupJid = created?.groupJid ?? created?.id ?? created?.data?.groupJid ?? created?.data?.id ?? null;
       targetSubject = data.targetSubject!;
       if (!targetGroupJid) throw new Error("Falha ao criar o grupo de destino");
-      initialAdded.push(...seed);
+
+      // Verifica quem realmente entrou (privacidade/bloqueio derrubam silenciosamente).
+      try {
+        const parts = await evolution.groupParticipants(instance, targetGroupJid);
+        const joined = new Set(parts.map((p: any) => {
+          const j = String(p?.id ?? p?.jid ?? "");
+          return j.split("@")[0]?.replace(/\D/g, "") ?? "";
+        }).filter(Boolean));
+        for (const p of seed) if (joined.has(p)) initialAdded.push(p);
+      } catch {
+        // Sem verificação, assume o seed como pending — o worker tenta de novo.
+      }
     }
 
     // Persiste migração
