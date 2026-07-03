@@ -1,22 +1,24 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
-import { Plus, RefreshCw, Trash2, QrCode, Circle, Download, Users } from "lucide-react";
+import { Plus, RefreshCw, Trash2, QrCode, Circle, Download, Users, Link2, MoreVertical, Eraser, Smartphone } from "lucide-react";
 import qrGen from "qrcode-generator";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
   createConnection, deleteConnection, disconnectConnection, listConnections,
   reconnectConnection, refreshConnectionStatus, syncWhatsappConnection,
   listWhatsappGroups, toggleGroupMonitored, pollWhatsappQr,
+  listEvolutionInstances, attachEvolutionInstance, removeEvolutionInstance, wipeConnections,
 } from "@/lib/connections.functions";
 import { Checkbox } from "@/components/ui/checkbox";
 
@@ -210,51 +212,113 @@ function Page() {
 
 
 
+  const [adoptOpen, setAdoptOpen] = useState(false);
+  const [wipeScope, setWipeScope] = useState<null | "evolution" | "connecthub" | "both">(null);
+  const wipe = useMutation({
+    mutationFn: useServerFn(wipeConnections),
+    onSuccess: (r: any) => {
+      toast.success(`Limpeza concluída — Evolution: ${r.evolutionRemoved}, ConnectHub: ${r.connecthubRemoved}`);
+      qc.invalidateQueries();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Conexões</h1>
           <p className="text-muted-foreground">Gerencie suas conexões WhatsApp, Telegram e customizadas.</p>
         </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild><Button><Plus className="mr-2 h-4 w-4" /> Nova conexão</Button></DialogTrigger>
-          <DialogContent>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const fd = new FormData(e.currentTarget);
-              create.mutate({ data: { name: String(fd.get("name")), description: String(fd.get("description") || ""), provider: fd.get("provider") as "whatsapp" } });
-            }}>
-              <DialogHeader><DialogTitle>Nova conexão</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-4">
-                <div><Label htmlFor="name">Nome</Label><Input id="name" name="name" required maxLength={120} /></div>
-                <div><Label htmlFor="description">Descrição</Label><Input id="description" name="description" maxLength={500} /></div>
-                <div>
-                  <Label htmlFor="provider">Provedor</Label>
-                  <select id="provider" name="provider" className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm">
-                    <option value="whatsapp">WhatsApp</option>
-                    <option value="telegram">Telegram</option>
-                    <option value="custom">Custom</option>
-                  </select>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={() => setAdoptOpen(true)}>
+            <Link2 className="mr-2 h-4 w-4" /> Adotar existente
+          </Button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild><Button><Plus className="mr-2 h-4 w-4" /> Nova instância</Button></DialogTrigger>
+            <DialogContent>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const fd = new FormData(e.currentTarget);
+                create.mutate({ data: { name: String(fd.get("name")), description: String(fd.get("description") || ""), provider: fd.get("provider") as "whatsapp" } });
+              }}>
+                <DialogHeader>
+                  <DialogTitle>Nova instância</DialogTitle>
+                  <DialogDescription>Cria uma nova instância na Evolution + vínculo aqui. Para reusar uma já existente, use "Adotar existente".</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div><Label htmlFor="name">Nome (rótulo)</Label><Input id="name" name="name" required maxLength={120} placeholder="Ex.: WhatsApp 1" /></div>
+                  <div><Label htmlFor="description">Descrição</Label><Input id="description" name="description" maxLength={500} /></div>
+                  <div>
+                    <Label htmlFor="provider">Provedor</Label>
+                    <select id="provider" name="provider" className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm">
+                      <option value="whatsapp">WhatsApp</option>
+                      <option value="telegram">Telegram</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                  </div>
                 </div>
-              </div>
-              <DialogFooter><Button type="submit" disabled={create.isPending}>Criar</Button></DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
+                <DialogFooter><Button type="submit" disabled={create.isPending}>Criar</Button></DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" title="Limpeza"><MoreVertical className="h-4 w-4" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel>Limpeza</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setWipeScope("evolution")}>
+                <Eraser className="mr-2 h-4 w-4" /> Apagar todas na Evolution
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setWipeScope("connecthub")}>
+                <Eraser className="mr-2 h-4 w-4" /> Apagar todas no ConnectHub
+              </DropdownMenuItem>
+              <DropdownMenuItem className="text-destructive" onClick={() => setWipeScope("both")}>
+                <Eraser className="mr-2 h-4 w-4" /> Apagar TUDO (Evolution + ConnectHub)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
+      <AlertDialog open={!!wipeScope} onOpenChange={(o) => !o && setWipeScope(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar limpeza?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {wipeScope === "evolution" && "Todas as instâncias serão removidas da Evolution API. Vínculos no ConnectHub serão mantidos mas ficarão sem sessão."}
+              {wipeScope === "connecthub" && "Todas as conexões do ConnectHub serão removidas. Instâncias na Evolution serão mantidas — você pode adotá-las de novo depois."}
+              {wipeScope === "both" && "Tudo será apagado dos dois lados. Ação irreversível."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { if (wipeScope) wipe.mutate({ data: { scope: wipeScope } }); setWipeScope(null); }}>
+              Confirmar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {data.length === 0 ? (
-        <Card><CardContent className="py-12 text-center text-muted-foreground">Nenhuma conexão ainda. Crie a primeira.</CardContent></Card>
+        <Card><CardContent className="py-12 text-center text-muted-foreground">Nenhuma conexão ainda. Crie uma nova instância ou adote uma existente da Evolution.</CardContent></Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {data.map((c) => (
             <Card key={c.id}>
               <CardHeader>
-                <div className="flex items-start justify-between">
-                  <div>
-                    <CardTitle className="text-base">{c.name}</CardTitle>
-                    <CardDescription className="text-xs">{c.provider}</CardDescription>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <CardTitle className="text-base truncate">{c.name}</CardTitle>
+                    <CardDescription className="text-xs">
+                      {c.provider}
+                      {(c.metadata as any)?.evolution_instance && (
+                        <span className="ml-1 font-mono text-[10px] opacity-70">· {(c.metadata as any).evolution_instance}</span>
+                      )}
+                    </CardDescription>
                   </div>
                   <StatusBadge status={c.status} />
                 </div>
@@ -340,7 +404,129 @@ function Page() {
       </Dialog>
 
       <GroupsDialog connectionId={groupsFor} onClose={() => setGroupsFor(null)} />
+      <AdoptDialog open={adoptOpen} onClose={() => setAdoptOpen(false)} onQr={(q) => setQr(q)} defaultLabel={`WhatsApp ${data.length + 1}`} />
     </div>
+  );
+}
+
+function AdoptDialog({ open, onClose, onQr, defaultLabel }: { open: boolean; onClose: () => void; onQr: (qr: string) => void; defaultLabel: string }) {
+  const qc = useQueryClient();
+  const listFn = useServerFn(listEvolutionInstances);
+  const attachFn = useServerFn(attachEvolutionInstance);
+  const removeFn = useServerFn(removeEvolutionInstance);
+  const q = useQuery({
+    queryKey: ["evolution-instances"],
+    queryFn: () => listFn(),
+    enabled: open,
+    refetchInterval: open ? 5000 : false,
+  });
+  const [selected, setSelected] = useState<string | null>(null);
+  const [label, setLabel] = useState(defaultLabel);
+
+  useEffect(() => { if (open) setLabel(defaultLabel); }, [open, defaultLabel]);
+
+  const attach = useMutation({
+    mutationFn: attachFn,
+    onSuccess: (row: any) => {
+      toast.success(`Instância "${row.name}" adotada.`);
+      qc.invalidateQueries({ queryKey: ["connections"] });
+      qc.invalidateQueries({ queryKey: ["evolution-instances"] });
+      if (row?.qr_code) onQr(row.qr_code);
+      onClose();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const remove = useMutation({
+    mutationFn: removeFn,
+    onSuccess: () => {
+      toast.success("Instância removida da Evolution.");
+      qc.invalidateQueries({ queryKey: ["evolution-instances"] });
+      qc.invalidateQueries({ queryKey: ["connections"] });
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const rows = (q.data as any[] | undefined) ?? [];
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Smartphone className="h-5 w-5" /> Instâncias na Evolution</DialogTitle>
+          <DialogDescription>
+            Escolha uma instância já criada no Evolution Manager para vincular aqui. Não cria nada novo — apenas reaproveita.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="max-h-[50vh] space-y-2 overflow-y-auto py-2">
+          {q.isLoading && <p className="text-sm text-muted-foreground">Carregando instâncias…</p>}
+          {q.error && <p className="text-sm text-destructive">Falha ao consultar Evolution: {(q.error as Error).message}</p>}
+          {!q.isLoading && rows.length === 0 && (
+            <p className="text-sm text-muted-foreground">Nenhuma instância encontrada na Evolution. Use "Nova instância" para criar uma.</p>
+          )}
+          {rows.map((r) => {
+            const isSel = selected === r.instanceName;
+            const disabled = !!r.linked;
+            return (
+              <div
+                key={r.instanceName}
+                className={`flex items-center gap-3 rounded-md border p-3 ${isSel ? "border-primary bg-accent" : ""} ${disabled ? "opacity-60" : "cursor-pointer hover:bg-accent"}`}
+                onClick={() => !disabled && setSelected(r.instanceName)}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">
+                    {r.profileName ?? r.instanceName}
+                    {r.linked && <span className="ml-2 text-xs text-muted-foreground">· já vinculada como "{r.linked.label}"</span>}
+                  </p>
+                  <p className="truncate font-mono text-[11px] text-muted-foreground">
+                    {r.instanceName}{r.ownerJid ? ` · ${r.ownerJid}` : ""}
+                  </p>
+                </div>
+                <StatusBadge status={r.status} />
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button size="icon" variant="ghost" className="text-destructive" onClick={(e) => e.stopPropagation()} title="Remover da Evolution">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Remover instância da Evolution?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        A instância <b className="font-mono">{r.instanceName}</b> será apagada do Evolution Manager.
+                        {r.linked && " O vínculo no ConnectHub também será removido."}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => remove.mutate({ data: { instanceName: r.instanceName, alsoRemoveConnection: !!r.linked } })}>
+                        Remover
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="space-y-2 border-t pt-3">
+          <Label htmlFor="adopt-label">Rótulo no ConnectHub</Label>
+          <Input id="adopt-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Ex.: WhatsApp 1" />
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancelar</Button>
+          <Button
+            disabled={!selected || !label.trim() || attach.isPending}
+            onClick={() => selected && attach.mutate({ data: { instanceName: selected, label: label.trim() } })}
+          >
+            {attach.isPending ? "Vinculando…" : "Vincular"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
