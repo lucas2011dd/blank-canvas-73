@@ -34,7 +34,20 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const { evolution } = await import("@/lib/evolution.server");
 
         const nowIso = new Date().toISOString();
-        const summary = { broadcasts: 0, scheduled: 0, errors: 0 };
+        const summary = { broadcasts: 0, scheduled: 0, errors: 0, webhooks: 0, webhookErrors: 0 };
+
+        // -------- Drena fila de webhooks (arquitetura assíncrona) --------
+        // O endpoint /webhook/$instance só enfileira em webhook_logs. Aqui
+        // processamos com retry/backoff, sem prender a Evolution em 30s.
+        try {
+          const { drainWebhookQueue } = await import("@/lib/webhook-processor.server");
+          const drainDeadline = Date.now() + 8_000;
+          const drainRes = await drainWebhookQueue(supabaseAdmin, 100, drainDeadline);
+          summary.webhooks = drainRes.processed;
+          summary.webhookErrors = drainRes.failed;
+        } catch (e) {
+          console.error("[tick] webhook drain failed", e);
+        }
 
         // Repara webhooks e reconcilia o status real da Evolution (evita ficar
         // "connecting" quando o celular já apareceu como conectado).

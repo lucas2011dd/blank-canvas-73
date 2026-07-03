@@ -350,10 +350,27 @@ export const evolution = {
   },
 
   async sendText(instanceName: string, number: string, text: string) {
-    return call(`/message/sendText/${encodeURIComponent(instanceName)}`, {
-      method: "POST",
-      body: { number, text },
-    });
+    // Exponential backoff em 5xx/515 (recomendação da spec 2026).
+    // Tenta em 2s, 4s, 8s. Erros 4xx (número inválido, sessão morta) NÃO
+    // são retentados aqui — vão para o handler do broadcast/scheduler.
+    const delays = [0, 2_000, 4_000, 8_000];
+    let lastErr: any;
+    for (const wait of delays) {
+      if (wait) await new Promise((r) => setTimeout(r, wait));
+      try {
+        return await call(`/message/sendText/${encodeURIComponent(instanceName)}`, {
+          method: "POST",
+          body: { number, text },
+        });
+      } catch (e: any) {
+        lastErr = e;
+        const status = Number(e?.status ?? e?.statusCode ?? 0);
+        const msg = String(e?.message ?? "");
+        const retriable = status >= 500 || status === 515 || /timeout|ECONNABORTED|ECONNRESET/i.test(msg);
+        if (!retriable) throw e;
+      }
+    }
+    throw lastErr;
   },
 
   async setWebhook(instanceName: string, url: string) {
