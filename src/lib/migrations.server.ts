@@ -55,35 +55,52 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   const errors: Record<string, string> = {};
 
   try {
-    const res = await evolution.addGroupParticipants(instance, mig.target_group_jid, phones);
-    // Evolution v2 devolve array por participante com status. Normalizamos.
+    // Evolution v2 aceita telefones puros, mas alguns builds só respeitam JID completo.
+    // Enviar como JID garante o comportamento consistente.
+    const jids = phones.map((p: string) => `${p}@s.whatsapp.net`);
+    const res = await evolution.addGroupParticipants(instance, mig.target_group_jid, jids);
     const list = Array.isArray(res) ? res : (res?.participants ?? res?.data ?? []);
     const byPhone: Record<string, any> = {};
     for (const item of list) {
-      const jid = String(item?.jid ?? item?.id ?? "");
+      const jid = String(item?.jid ?? item?.id ?? item?.number ?? "");
       const phone = jid.split("@")[0]?.replace(/\D/g, "") ?? "";
       if (phone) byPhone[phone] = item;
     }
+
+    // Verifica de fato quem entrou no grupo (evita reportar "adicionado" quando
+    // a Evolution devolve 200 mas o participante não caiu no grupo — bloqueado,
+    // não é WhatsApp, privacidade, etc.).
+    let joinedSet = new Set<string>();
+    try {
+      const parts = await evolution.groupParticipants(instance, mig.target_group_jid);
+      joinedSet = new Set(parts.map((p: any) => {
+        const j = String(p?.id ?? p?.jid ?? "");
+        return j.split("@")[0]?.replace(/\D/g, "") ?? "";
+      }).filter(Boolean));
+    } catch { /* fallback: usa apenas o retorno da chamada */ }
+
     for (const t of batch) {
       const it = byPhone[t.phone];
-      const status = it?.status ?? (list.length ? "unknown" : "success");
-      if (status === "success" || status === 200 || String(status) === "200") {
+      const rawStatus = String(it?.status ?? "");
+      const apiSuccess = rawStatus === "success" || rawStatus === "200" || (it && !it?.message);
+      const joined = joinedSet.size ? joinedSet.has(t.phone) : apiSuccess;
+
+      if (joined) {
         await supabase.from("group_migration_targets").update({
           status: "added", added_at: new Date().toISOString(),
         }).eq("id", t.id);
         added++;
-      } else if (status === "skipped" || status === "already_in_group") {
-        await supabase.from("group_migration_targets").update({ status: "skipped", error: String(status) }).eq("id", t.id);
+      } else if (rawStatus === "skipped" || rawStatus === "already_in_group") {
+        await supabase.from("group_migration_targets").update({ status: "skipped", error: rawStatus }).eq("id", t.id);
         skipped++;
       } else {
-        const err = String(it?.message ?? status ?? "erro");
+        const err = String(it?.message ?? rawStatus ?? "não entrou no grupo (privacidade/bloqueio/não é WhatsApp)");
         await supabase.from("group_migration_targets").update({ status: "failed", error: err }).eq("id", t.id);
         failed++;
         errors[t.phone] = err;
       }
     }
   } catch (e: any) {
-    // Falha em massa: marca todos como failed
     for (const t of batch) {
       await supabase.from("group_migration_targets").update({
         status: "failed", error: String(e?.message ?? "erro"),
