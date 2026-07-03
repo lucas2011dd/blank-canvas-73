@@ -138,22 +138,25 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
 
     const { data: conn } = await context.supabase.from("connections")
       .select("id,status,metadata").eq("id", bc.connection_id).eq("user_id", context.userId).single();
-    if (!conn || conn.status !== "online") throw new Error("Conexão WhatsApp offline");
+    if (!conn) throw new Error("Conexão WhatsApp não encontrada");
     const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
 
-    const { evolution, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const { evolution, isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
     const resolved = await resolveEvolutionStatus(instance);
     if (resolved.status !== "online") {
+      const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
       await context.supabase.from("connections").update({
-        status: resolved.status,
+        status: recovered?.status ?? resolved.status,
+        ...(recovered?.status === "online" ? { qr_code: null } : {}),
         last_sync_at: new Date().toISOString(),
         metadata: {
           ...((conn.metadata as Record<string, unknown> | null) ?? {}),
           evolution_instance: instance,
-          evolution_state: resolved.state ?? resolved.status,
+          evolution_state: recovered?.state ?? resolved.status,
+          auto_reconnect_at: new Date().toISOString(),
         },
       }).eq("id", conn.id).eq("user_id", context.userId);
-      throw new Error("Conexão WhatsApp offline");
+      if (recovered?.status !== "online") throw new Error("Reconectando WhatsApp sem novo QR; disparo mantido na fila");
     }
     const nowIso = new Date().toISOString();
     const { data: due } = await context.supabase.from("broadcast_targets")
@@ -171,6 +174,27 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
         }).eq("id", t.id);
         results.push({ id: t.id, ok: true });
       } catch (e: any) {
+        if (isTransientEvolutionError(e)) {
+          const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
+          await context.supabase.from("connections").update({
+            status: recovered?.status ?? "connecting",
+            ...(recovered?.status === "online" ? { qr_code: null } : {}),
+            last_sync_at: new Date().toISOString(),
+            metadata: {
+              ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+              evolution_instance: instance,
+              evolution_state: recovered?.state ?? "reconnecting",
+              auto_reconnect_at: new Date().toISOString(),
+            },
+          }).eq("id", conn.id).eq("user_id", context.userId);
+          await context.supabase.from("broadcast_targets").update({
+            status: "pending",
+            next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
+            last_error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
+          } as any).eq("id", t.id);
+          results.push({ id: t.id, ok: false, error: "reconnecting" });
+          break;
+        }
         await context.supabase.from("broadcast_targets").update({
           status: "failed", last_error: e?.message ?? "erro",
         } as any).eq("id", t.id);
