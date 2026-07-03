@@ -16,7 +16,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   createConnection, deleteConnection, disconnectConnection, listConnections,
   reconnectConnection, refreshConnectionStatus, syncWhatsappConnection,
-  listWhatsappGroups, toggleGroupMonitored,
+  listWhatsappGroups, toggleGroupMonitored, pollWhatsappQr,
 } from "@/lib/connections.functions";
 import { Checkbox } from "@/components/ui/checkbox";
 
