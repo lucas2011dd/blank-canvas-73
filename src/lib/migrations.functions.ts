@@ -237,8 +237,37 @@ export const runGroupMigrationNow = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
-    return await processGroupMigrationBatch(supabaseAdmin, data.id, context.userId);
+
+    // Drena múltiplos lotes na mesma chamada respeitando o delay configurado,
+    // até 45s no total, para que 1 clique/1 tick avance a migração real
+    // mesmo sem cron externo.
+    const startedAt = Date.now();
+    const MAX_MS = 45_000;
+    let last: any = null;
+    let batches = 0;
+
+    while (Date.now() - startedAt < MAX_MS && batches < 20) {
+      last = await processGroupMigrationBatch(supabaseAdmin, data.id, context.userId);
+      batches++;
+      if (last?.completed || last?.done) break;
+      if (last?.skipped) break; // connection_offline / evolution_closed — sai e deixa o cron/tick pegar
+
+      const { data: mig } = await supabaseAdmin.from("group_migrations")
+        .select("status,next_attempt_at,min_delay_seconds,max_delay_seconds")
+        .eq("id", data.id).maybeSingle();
+      if (!mig || (mig.status !== "running" && mig.status !== "pending")) break;
+
+      const wait = Math.max(1_000, Math.min(
+        (mig.max_delay_seconds ?? 60) * 1000,
+        Math.max(0, new Date(mig.next_attempt_at ?? Date.now()).getTime() - Date.now()),
+      ));
+      if (Date.now() - startedAt + wait > MAX_MS) break;
+      await new Promise((r) => setTimeout(r, wait));
+    }
+
+    return { ...(last ?? {}), batchesProcessed: batches };
   });
+
 
 function jitter(min: number, max: number) {
   return Math.floor(min + Math.random() * (max - min + 1));
