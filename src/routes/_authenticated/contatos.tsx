@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { createContact, deleteContact, listContacts } from "@/lib/contacts.functions";
 import { listConnections } from "@/lib/connections.functions";
+import { exportContactsToGoogle, googleConnectionStatus } from "@/lib/google.functions";
 
 const q = queryOptions({ queryKey: ["contacts"], queryFn: () => listContacts({ data: {} }) });
 const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
