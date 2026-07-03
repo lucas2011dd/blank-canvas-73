@@ -148,7 +148,12 @@ function IntegrationsTab() {
         <CardContent className="space-y-3">
           {!status.connected ? (
             <>
-              <Button onClick={() => { window.location.href = `/api/google/authorize?uid=${user?.id ?? ""}`; }}>
+              <Button onClick={async () => {
+                try {
+                  const { url } = await startGoogleOAuth({ data: { origin: window.location.origin } });
+                  window.location.href = url;
+                } catch (e: any) { toast.error(e?.message ?? "Falha ao iniciar OAuth"); }
+              }}>
                 Vincular conta Google
               </Button>
               <p className="text-xs text-muted-foreground">
