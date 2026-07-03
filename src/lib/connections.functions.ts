@@ -166,13 +166,24 @@ export const reconnectConnection = createServerFn({ method: "POST" })
 
     let qrBase64: string | null = null;
     let status: "online" | "offline" | "connecting" = "connecting";
-    qrBase64 = await extractQrImage(created);
-    if (!qrBase64) qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
 
-    if (!qrBase64) {
-      try {
-        status = (await resolveEvolutionStatus(name)).status;
-      } catch { /* ignore */ }
+    // Primeiro confere a sessão real: a Evolution pode devolver QR mesmo quando
+    // o celular ainda mostra o aparelho vinculado e os contatos/chats existem.
+    try {
+      const resolved = await resolveEvolutionStatus(name);
+      status = resolved.status;
+    } catch { /* ignore */ }
+
+    if (status !== "online") {
+      qrBase64 = await extractQrImage(created);
+      if (!qrBase64) qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
+      if (qrBase64) {
+        const resolvedAfterQr = await resolveEvolutionStatus(name).catch(() => null);
+        if (resolvedAfterQr?.status === "online") {
+          status = "online";
+          qrBase64 = null;
+        }
+      }
     }
 
     // Instâncias antigas/presas às vezes não devolvem QR no /connect.
@@ -185,7 +196,13 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       if (!qrBase64) {
         qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
       }
-      status = qrBase64 ? "connecting" : "offline";
+      const resolvedAfterRecreate = await resolveEvolutionStatus(name).catch(() => null);
+      if (resolvedAfterRecreate?.status === "online") {
+        status = "online";
+        qrBase64 = null;
+      } else {
+        status = qrBase64 ? "connecting" : "offline";
+      }
     }
 
     const patch = {
