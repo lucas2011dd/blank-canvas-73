@@ -69,15 +69,17 @@ export const createConnection = createServerFn({ method: "POST" })
         console.error("[connections] evolution setup falhou:", e?.message);
       }
 
-      const { data: updated } = await context.supabase.from("connections")
-        .update({
-          qr_code: qrBase64,
-          status,
-          metadata: evolutionInstance ? { evolution_instance: evolutionInstance } : {},
-          last_sync_at: new Date().toISOString(),
-        })
+      const patch = {
+        qr_code: qrBase64,
+        status,
+        metadata: evolutionInstance ? { evolution_instance: evolutionInstance } : {},
+        last_sync_at: new Date().toISOString(),
+      };
+      const { data: updated, error: updateError } = await context.supabase.from("connections")
+        .update(patch)
         .eq("id", row.id).select("*").single();
-      if (updated) Object.assign(row, updated);
+      if (updateError) console.error("[connections] update QR falhou:", updateError.message);
+      Object.assign(row, updated ?? patch);
     }
 
     await context.supabase.from("audit_logs").insert({
@@ -145,16 +147,28 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       status = qrBase64 ? "connecting" : "offline";
     }
 
+    const patch = {
+      status,
+      qr_code: qrBase64,
+      last_sync_at: new Date().toISOString(),
+      metadata: { evolution_instance: name },
+    };
+
     const { data: row, error } = await context.supabase
       .from("connections")
-      .update({
-        status,
-        qr_code: qrBase64,
-        last_sync_at: new Date().toISOString(),
-        metadata: { evolution_instance: name },
-      })
+      .update(patch)
       .eq("id", data.id).eq("user_id", context.userId).select("*").single();
-    if (error) throw new Error(error.message);
+    if (error) {
+      console.error("[connections] reconnect update falhou:", error.message);
+      const { data: existing } = await context.supabase
+        .from("connections")
+        .select("*")
+        .eq("id", data.id)
+        .eq("user_id", context.userId)
+        .single();
+      if (!existing) throw new Error(error.message);
+      return { ...existing, ...patch };
+    }
     return row;
   });
 
