@@ -44,7 +44,7 @@ export const createConnection = createServerFn({ method: "POST" })
 
     if (data.provider === "whatsapp") {
       try {
-        const { evolution } = await import("@/lib/evolution.server");
+        const { evolution, extractQrImage } = await import("@/lib/evolution.server");
         const name = instanceNameFor(row.id);
         evolutionInstance = name;
 
@@ -53,13 +53,13 @@ export const createConnection = createServerFn({ method: "POST" })
           console.error("[connections] createInstance falhou:", e?.message);
           return null;
         });
-        qrBase64 = created?.qrcode?.base64 ?? null;
+        qrBase64 = await extractQrImage(created);
 
         // 2) se não veio, força um /connect (Evolution regenera)
         if (!qrBase64) {
           try {
             const c = await evolution.connect(name);
-            qrBase64 = c.base64 ?? null;
+            qrBase64 = await extractQrImage(c);
           } catch (e: any) {
             console.error("[connections] connect falhou:", e?.message);
           }
@@ -112,7 +112,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
     // garante que a instância existe (idempotente) e busca o QR
-    const { evolution, evolutionStateToStatus } = await import("@/lib/evolution.server");
+    const { evolution, evolutionStateToStatus, extractQrImage } = await import("@/lib/evolution.server");
     const name = instanceNameFor(data.id);
 
     // tenta criar (se já existir a Evolution retorna erro — ignoramos)
@@ -122,7 +122,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     let status: "online" | "offline" | "connecting" = "connecting";
     try {
       const connectRes = await evolution.connect(name);
-      qrBase64 = connectRes.base64 ?? null;
+      qrBase64 = await extractQrImage(connectRes);
     } catch (e: any) {
       // Se falhar em connect, tenta ler estado atual
       try {
