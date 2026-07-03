@@ -1,7 +1,7 @@
 // Server-only worker para processar 1 batch de uma migração de grupo.
 // É importado dinamicamente por server functions e pelo cron público
 // (/api/public/wa/tick). NUNCA importe no cliente.
-import { evolution } from "@/lib/evolution.server";
+import { evolution, resolveEvolutionStatus } from "@/lib/evolution.server";
 
 function instanceNameFor(id: string) {
   return `ch_${id.replace(/-/g, "")}`;
@@ -116,14 +116,15 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
 
   if (conn.status !== "online") {
     try {
-      const state = await evolution.state(instance);
-      if (state?.instance?.state === "open") {
+      const resolved = await resolveEvolutionStatus(instance);
+      if (resolved.status === "online") {
         await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
       } else {
-        const mustRescan = state?.instance?.state === "close" || isLoggedOutEvolutionError(state) || needsManualQr(conn, state);
+        const state = await evolution.state(instance).catch(() => null);
+        const mustRescan = resolved.status === "offline" || isLoggedOutEvolutionError(state) || needsManualQr(conn, state);
         if (!mustRescan) await tryReconnect();
         const requeued = await requeueTransientFailures(supabase, mig.id);
-        await supabase.from("connections").update({ status: state?.instance?.state === "connecting" ? "connecting" : "offline" }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+        await supabase.from("connections").update({ status: resolved.status }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
         await supabase.from("group_migrations").update({
           failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
           next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
@@ -146,12 +147,13 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   }
 
   try {
-    const state = await evolution.state(instance);
-    if (state?.instance?.state !== "open") {
-      const mustRescan = state?.instance?.state === "close" || needsManualQr(conn, state);
+    const resolved = await resolveEvolutionStatus(instance);
+    if (resolved.status !== "online") {
+      const state = await evolution.state(instance).catch(() => null);
+      const mustRescan = resolved.status === "offline" || needsManualQr(conn, state);
       if (!mustRescan) await tryReconnect();
       const requeued = await requeueTransientFailures(supabase, mig.id);
-      await supabase.from("connections").update({ status: "offline" }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      await supabase.from("connections").update({ status: resolved.status }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
       await supabase.from("group_migrations").update({
         failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
         next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
