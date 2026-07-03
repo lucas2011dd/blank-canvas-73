@@ -350,14 +350,14 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       }
     }
   } catch (e: any) {
-    if (isTransientEvolutionError(e)) {
+    if (isTransientEvolutionError(e) || isLoggedOutEvolutionError(e)) {
       const recovered = await tryReconnect();
       await supabase.from("group_migrations").update({
         failed_count: effectiveFailedCount,
-        next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
+        next_attempt_at: new Date(Date.now() + 15_000).toISOString(),
         last_error: recovered
-          ? "Conexão recuperada sem novo QR — retry em 30s, lote mantido pendente"
-          : "Conexão caiu durante a adição — reconectando sem novo QR, lote mantido pendente",
+          ? "Conexão recuperada sem novo QR — retry em 15s, lote mantido pendente"
+          : "Conexão caiu durante a adição — reconexão silenciosa ativa, lote mantido pendente",
       }).eq("id", mig.id);
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true };
     }
