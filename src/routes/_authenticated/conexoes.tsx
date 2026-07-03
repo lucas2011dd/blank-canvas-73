@@ -34,7 +34,13 @@ function Page() {
 
   const create = useMutation({
     mutationFn: useServerFn(createConnection),
-    onSuccess: () => { toast.success("Conexão criada"); setOpen(false); qc.invalidateQueries({ queryKey: ["connections"] }); },
+    onSuccess: (row: any) => {
+      toast.success("Conexão criada");
+      setOpen(false);
+      if (row?.qr_code) setQr(row.qr_code);
+      else if (row?.provider === "whatsapp") toast.info("QR não gerado — clique em Reconectar");
+      qc.invalidateQueries({ queryKey: ["connections"] });
+    },
     onError: (e) => toast.error(e.message),
   });
   const del = useMutation({
