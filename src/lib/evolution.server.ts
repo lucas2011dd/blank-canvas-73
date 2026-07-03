@@ -523,24 +523,48 @@ export function evolutionStateToStatus(state?: string): EvolutionConnectionStatu
 }
 
 export function payloadIndicatesPairingLost(source: unknown): boolean {
-  const haystack = (() => {
-    try {
-      return JSON.stringify(source).toLowerCase();
-    } catch {
-      return String(source ?? "").toLowerCase();
-    }
-  })();
-  return (
-    haystack.includes("device_removed") ||
-    haystack.includes("logged_out") ||
-    haystack.includes("logged out") ||
-    haystack.includes("logout") ||
-    haystack.includes("unpaired") ||
-    haystack.includes("statusreason\":401") ||
-    haystack.includes("statusreason:401") ||
-    haystack.includes("disconnectreason\":401") ||
-    haystack.includes("stream:error") && haystack.includes("401")
+  // IMPORTANTE: só considera "pareamento perdido" quando o próprio CAMPO de
+  // estado indica isso. Não pode varrer o payload inteiro porque o
+  // fetchInstances da Evolution v2 devolve a lista de eventos do webhook
+  // (que contém "LOGOUT_INSTANCE") e configs como "alwaysOnline" — isso
+  // gerava falso positivo e forçava offline mesmo com WhatsApp "open".
+  const s: any = source ?? {};
+  const stateField = firstString(
+    s?.instance?.state,
+    s?.instance?.status,
+    s?.instance?.connectionStatus,
+    s?.data?.instance?.state,
+    s?.data?.instance?.status,
+    s?.data?.state,
+    s?.data?.status,
+    s?.state,
+    s?.status,
+    s?.connection,
+    s?.connectionStatus,
   );
+  const normalized = String(stateField ?? "").toLowerCase();
+  if (
+    normalized === "device_removed" ||
+    normalized === "logged_out" ||
+    normalized === "logged out" ||
+    normalized === "logout" ||
+    normalized === "unpaired" ||
+    normalized === "unauthorized" ||
+    normalized.includes("device_removed") ||
+    normalized.includes("logged_out") ||
+    normalized.includes("logged out") ||
+    normalized.includes("unpaired")
+  ) return true;
+
+  const reason = firstString(
+    s?.statusReason,
+    s?.instance?.statusReason,
+    s?.disconnectReason,
+    s?.instance?.disconnectReason,
+  );
+  if (reason && (reason === "401" || reason.includes("401"))) return true;
+
+  return false;
 }
 
 export function isTransientEvolutionError(error: unknown): boolean {
