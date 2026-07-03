@@ -148,10 +148,29 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
     if (!conn) throw new Error("Conexão WhatsApp não encontrada");
     const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
 
-    const { evolution, isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const { evolution, isPairingLostEvolutionError, isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const { markConnectionReauthRequired, REAUTH_REQUIRED_MESSAGE } = await import("@/lib/automation-safety.server");
     const resolved = await resolveEvolutionStatus(instance);
     if (resolved.status !== "online") {
+      if (isPairingLostEvolutionError(resolved.state)) {
+        await markConnectionReauthRequired(context.supabase, {
+          connectionId: conn.id,
+          userId: context.userId,
+          instanceName: instance,
+          reason: resolved.state ?? "device_removed",
+        });
+        throw new Error(REAUTH_REQUIRED_MESSAGE);
+      }
       const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
+      if (isPairingLostEvolutionError(recovered?.state)) {
+        await markConnectionReauthRequired(context.supabase, {
+          connectionId: conn.id,
+          userId: context.userId,
+          instanceName: instance,
+          reason: recovered?.state ?? "device_removed",
+        });
+        throw new Error(REAUTH_REQUIRED_MESSAGE);
+      }
       await context.supabase.from("connections").update({
         status: recovered?.status ?? resolved.status,
         ...(recovered?.status === "online" ? { qr_code: null } : {}),
@@ -181,6 +200,19 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
         }).eq("id", t.id);
         results.push({ id: t.id, ok: true });
       } catch (e: any) {
+        if (isPairingLostEvolutionError(e)) {
+          await context.supabase.from("broadcast_targets").update({
+            status: "pending",
+            last_error: REAUTH_REQUIRED_MESSAGE,
+          } as any).eq("id", t.id);
+          await markConnectionReauthRequired(context.supabase, {
+            connectionId: conn.id,
+            userId: context.userId,
+            instanceName: instance,
+            reason: String(e?.message ?? "device_removed"),
+          });
+          throw new Error(REAUTH_REQUIRED_MESSAGE);
+        }
         if (isTransientEvolutionError(e)) {
           const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
           await context.supabase.from("connections").update({
