@@ -306,7 +306,7 @@ export const deleteConnection = createServerFn({ method: "POST" })
     const connecthubRemoved = await hardDeleteConnectionRows(db, context.userId, [data.id]);
 
     // 2) Best-effort: derruba na Evolution em segundo plano com timeout curto.
-    let removedFromEvolution = true;
+    let removedFromEvolution: boolean | null = data.keepEvolution ? null : true;
     if (!data.keepEvolution && existing.provider === "whatsapp") {
       try {
         const { evolution } = await import("@/lib/evolution.server");
