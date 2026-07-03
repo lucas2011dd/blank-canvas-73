@@ -120,8 +120,6 @@ function webhookConfig(url: string, key: string) {
     "MESSAGES_UPSERT",
     "CONNECTION_UPDATE",
     "QRCODE_UPDATED",
-    "GROUPS_UPSERT",
-    "GROUP_PARTICIPANTS_UPDATE",
   ];
   return {
     enabled: true,
@@ -360,12 +358,21 @@ export const evolution = {
 
   async setWebhook(instanceName: string, url: string) {
     const { key } = env();
-    return call(`/webhook/set/${encodeURIComponent(instanceName)}`, {
-      method: "POST",
-      body: {
-        webhook: webhookConfig(url, key),
-      },
-    }).catch(() => null);
+    const config = webhookConfig(url, key);
+    try {
+      // Evolution v2 aplica `webhook_base64/events` no corpo direto. Quando
+      // enviado aninhado em `{ webhook: ... }`, a URL pode mudar mas filtros e
+      // base64 continuam antigos, gerando dumps enormes e timeouts.
+      return await call(`/webhook/set/${encodeURIComponent(instanceName)}`, {
+        method: "POST",
+        body: config,
+      });
+    } catch {
+      return call(`/webhook/set/${encodeURIComponent(instanceName)}`, {
+        method: "POST",
+        body: { webhook: config },
+      }).catch(() => null);
+    }
   },
 
   async setSettings(instanceName: string) {
