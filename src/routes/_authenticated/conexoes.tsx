@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
-import { Plus, RefreshCw, Trash2, QrCode, Circle } from "lucide-react";
+import { Plus, RefreshCw, Trash2, QrCode, Circle, Download, Users } from "lucide-react";
 import qrGen from "qrcode-generator";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,8 +15,11 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
   createConnection, deleteConnection, disconnectConnection, listConnections,
-  reconnectConnection, refreshConnectionStatus,
+  reconnectConnection, refreshConnectionStatus, syncWhatsappConnection,
+  listWhatsappGroups, toggleGroupMonitored,
 } from "@/lib/connections.functions";
+import { Checkbox } from "@/components/ui/checkbox";
+
 
 const q = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
 
