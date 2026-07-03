@@ -155,9 +155,9 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
   const [mode, setMode] = useState<"new_group" | "existing_group">("new_group");
   const [targetSubject, setTargetSubject] = useState("");
   const [targetJid, setTargetJid] = useState("");
-  const [batchSize, setBatchSize] = useState(2);
-  const [minDelay, setMinDelay] = useState(15);
-  const [maxDelay, setMaxDelay] = useState(30);
+  const [batchSize, setBatchSize] = useState(1);
+  const [minDelay, setMinDelay] = useState(75);
+  const [maxDelay, setMaxDelay] = useState(180);
   const [skipAdmins, setSkipAdmins] = useState(true);
   const [skipSelf, setSkipSelf] = useState(true);
   const [shuffleOrder, setShuffleOrder] = useState(true);
@@ -240,15 +240,15 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <div>
             <Label className="text-xs">Batch</Label>
-            <Input type="number" min={1} max={10} value={batchSize} onChange={(e) => setBatchSize(Math.max(1, Math.min(10, Number(e.target.value) || 3)))} />
+            <Input type="number" min={1} max={3} value={batchSize} onChange={(e) => setBatchSize(Math.max(1, Math.min(3, Number(e.target.value) || 1)))} />
           </div>
           <div>
             <Label className="text-xs">Delay min (s)</Label>
-            <Input type="number" min={15} value={minDelay} onChange={(e) => setMinDelay(Math.max(15, Number(e.target.value) || 45))} />
+            <Input type="number" min={75} value={minDelay} onChange={(e) => setMinDelay(Math.max(75, Number(e.target.value) || 75))} />
           </div>
           <div>
             <Label className="text-xs">Delay max (s)</Label>
-            <Input type="number" min={30} value={maxDelay} onChange={(e) => setMaxDelay(Math.max(30, Number(e.target.value) || 120))} />
+            <Input type="number" min={180} value={maxDelay} onChange={(e) => setMaxDelay(Math.max(180, Number(e.target.value) || 180))} />
           </div>
         </div>
 
@@ -278,7 +278,7 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
 
         <p className="text-xs text-muted-foreground">
           <b>100% automático:</b> a migração roda 24/7 pelo tick (~1/min) — não precisa clicar em "Batch agora".
-          Adiciona {batchSize} contato(s) por lote com delay {minDelay}–{maxDelay}s. Recomendado: batch ≤ 3 e delay ≥ 45s.
+          Adiciona com ritmo seguro: 1 contato por chamada real, delay mínimo {minDelay}–{maxDelay}s. Isso evita travar a fila da Evolution e reduzir logout.
         </p>
       </div>
       <DialogFooter>

@@ -120,8 +120,6 @@ function webhookConfig(url: string, key: string) {
     "MESSAGES_UPSERT",
     "CONNECTION_UPDATE",
     "QRCODE_UPDATED",
-    "CONTACTS_UPSERT",
-    "CHATS_UPSERT",
     "GROUPS_UPSERT",
     "GROUP_PARTICIPANTS_UPDATE",
   ];
@@ -129,9 +127,9 @@ function webhookConfig(url: string, key: string) {
     enabled: true,
     url,
     byEvents: false,
-    base64: true,
+    base64: false,
     webhook_by_events: false,
-    webhook_base64: true,
+    webhook_base64: false,
     events,
     headers: webhookAuthHeaders(key),
   };
@@ -143,6 +141,8 @@ function urlCandidates(base: string, path: string) {
   const add = (url: string) => {
     if (!candidates.includes(url)) candidates.push(url);
   };
+  const cachedBase = EVOLUTION_WORKING_BASE.get(base);
+  if (cachedBase) add(`${cachedBase}${path}`);
   add(primary);
   try {
     const url = new URL(primary);
@@ -161,13 +161,15 @@ function urlCandidates(base: string, path: string) {
   return candidates;
 }
 
+const EVOLUTION_WORKING_BASE: Map<string, string> = (globalThis as any).__evolutionWorkingBase ??= new Map();
+
 async function call<T = any>(
   path: string,
   init: { method?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<T> {
   const { base, key } = env();
   let lastError: Error | null = null;
-  const timeoutMs = init.timeoutMs ?? 15_000;
+  const timeoutMs = init.timeoutMs ?? 10_000;
 
   for (const url of urlCandidates(base, path)) {
     let res: Response;
@@ -190,7 +192,10 @@ async function call<T = any>(
     const text = await res.text();
     let json: any = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* pass */ }
-    if (res.ok) return json as T;
+    if (res.ok) {
+      try { EVOLUTION_WORKING_BASE.set(base, new URL(url).origin); } catch { /* noop */ }
+      return json as T;
+    }
 
     const rawMsg = json?.response?.message ?? json?.message ?? text ?? `HTTP ${res.status}`;
     const msg = Array.isArray(rawMsg) ? rawMsg.map(String).join(" — ") : rawMsg;

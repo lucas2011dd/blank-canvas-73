@@ -11,6 +11,28 @@ function jitter(min: number, max: number) {
   return Math.floor(min + Math.random() * (max - min + 1));
 }
 
+function automationBatchSize(value: unknown): number {
+  const configured = Number(value ?? 1);
+  const envMax = Number(process.env.MIGRATION_MAX_BATCH_SIZE ?? 1);
+  const max = Number.isFinite(envMax) && envMax > 0 ? Math.floor(envMax) : 1;
+  return Math.max(1, Math.min(Number.isFinite(configured) ? Math.floor(configured) : 1, max));
+}
+
+function automationDelaySeconds(minValue: unknown, maxValue: unknown): number {
+  const minFloor = Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 75);
+  const maxFloor = Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 180);
+  const min = Math.max(
+    Number.isFinite(Number(minValue)) ? Number(minValue) : 75,
+    Number.isFinite(minFloor) ? minFloor : 75,
+  );
+  const max = Math.max(
+    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 180,
+    Number.isFinite(maxFloor) ? maxFloor : 180,
+    min,
+  );
+  return jitter(Math.floor(min), Math.floor(max));
+}
+
 function digits(value: unknown): string {
   return String(value ?? "").replace(/\D/g, "");
 }
@@ -203,8 +225,9 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   const requeued = await requeueTransientFailures(supabase, mig.id);
   const effectiveFailedCount = Math.max(0, (mig.failed_count ?? 0) - requeued);
 
+  const effectiveBatchSize = automationBatchSize(mig.batch_size);
   const { data: batch } = await supabase.from("group_migration_targets")
-    .select("*").eq("migration_id", mig.id).eq("status", "pending").limit(mig.batch_size ?? 3);
+    .select("*").eq("migration_id", mig.id).eq("status", "pending").limit(effectiveBatchSize);
 
   if (!batch || batch.length === 0) {
     await supabase.from("group_migrations").update({
@@ -301,7 +324,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   }
 
 
-  const nextAt = new Date(Date.now() + jitter(mig.min_delay_seconds ?? 45, mig.max_delay_seconds ?? 120) * 1000).toISOString();
+  const nextAt = new Date(Date.now() + automationDelaySeconds(mig.min_delay_seconds, mig.max_delay_seconds) * 1000).toISOString();
   const totalDone = (mig.added_count ?? 0) + added + effectiveFailedCount + failed + (mig.skipped_count ?? 0) + skipped;
   const done = totalDone >= (mig.total ?? 0);
 
