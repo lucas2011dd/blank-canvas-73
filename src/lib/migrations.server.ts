@@ -13,8 +13,9 @@ function jitter(min: number, max: number) {
 
 function automationBatchSize(value: unknown): number {
   const configured = Number(value ?? 1);
-  const envMax = Number(process.env.MIGRATION_MAX_BATCH_SIZE ?? 1);
-  const max = Number.isFinite(envMax) && envMax > 0 ? Math.floor(envMax) : 1;
+  // Teste inicial seguro: sempre 1 participante por batch.
+  // Não aumentar enquanto a sessão da Evolution estiver sensível a add em grupo.
+  const max = 1;
   return Math.max(1, Math.min(Number.isFinite(configured) ? Math.floor(configured) : 1, max));
 }
 
