@@ -51,7 +51,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           .eq("provider", "whatsapp")
           .in("status", ["online", "connecting"])
           .limit(20);
-        const { resolveEvolutionStatus } = await import("@/lib/evolution.server");
+        const { isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
         for (const conn of webhookConns ?? []) {
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
           const wh = webhookUrl(instance);
@@ -84,8 +84,24 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         for (const bc of running ?? []) {
           const { data: conn } = await supabaseAdmin.from("connections")
             .select("status,metadata").eq("id", bc.connection_id).maybeSingle();
-          if (!conn || conn.status !== "online") continue;
+          if (!conn) continue;
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(bc.connection_id).replace(/-/g, "")}`;
+
+          if (conn.status !== "online") {
+            const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
+            await supabaseAdmin.from("connections").update({
+              status: recovered?.status ?? "connecting",
+              ...(recovered?.status === "online" ? { qr_code: null } : {}),
+              last_sync_at: new Date().toISOString(),
+              metadata: {
+                ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                evolution_instance: instance,
+                evolution_state: recovered?.state ?? "reconnecting",
+                auto_reconnect_at: new Date().toISOString(),
+              },
+            }).eq("id", bc.connection_id);
+            if (recovered?.status !== "online") continue;
+          }
 
           // Pega 1 alvo devido por broadcast a cada tick (paralelismo controlado)
           const { data: due } = await supabaseAdmin.from("broadcast_targets")
@@ -117,6 +133,26 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             await supabaseAdmin.from("broadcasts").update({ sent_count: (bc.sent_count ?? 0) + 1 }).eq("id", bc.id);
             summary.broadcasts++;
           } catch (e: any) {
+            if (isTransientEvolutionError(e)) {
+              const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
+              await supabaseAdmin.from("connections").update({
+                status: recovered?.status ?? "connecting",
+                ...(recovered?.status === "online" ? { qr_code: null } : {}),
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instance,
+                  evolution_state: recovered?.state ?? "reconnecting",
+                  auto_reconnect_at: new Date().toISOString(),
+                },
+              }).eq("id", bc.connection_id);
+              await supabaseAdmin.from("broadcast_targets").update({
+                status: "pending",
+                next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
+                last_error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
+              }).eq("id", t.id);
+              continue;
+            }
             await supabaseAdmin.from("broadcast_targets").update({
               status: "failed", last_error: String(e?.message ?? "erro"),
             }).eq("id", t.id);
@@ -144,8 +180,23 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         for (const row of sched ?? []) {
           const { data: conn } = await supabaseAdmin.from("connections")
             .select("status,metadata").eq("id", row.connection_id).maybeSingle();
-          if (!conn || conn.status !== "online") continue;
+          if (!conn) continue;
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(row.connection_id).replace(/-/g, "")}`;
+          if (conn.status !== "online") {
+            const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
+            await supabaseAdmin.from("connections").update({
+              status: recovered?.status ?? "connecting",
+              ...(recovered?.status === "online" ? { qr_code: null } : {}),
+              last_sync_at: new Date().toISOString(),
+              metadata: {
+                ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                evolution_instance: instance,
+                evolution_state: recovered?.state ?? "reconnecting",
+                auto_reconnect_at: new Date().toISOString(),
+              },
+            }).eq("id", row.connection_id);
+            if (recovered?.status !== "online") continue;
+          }
           try {
             await evolution.sendText(instance, row.target, row.body);
             await supabaseAdmin.from("scheduled_messages").update({
@@ -162,6 +213,27 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               });
             }
           } catch (e: any) {
+            if (isTransientEvolutionError(e)) {
+              const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
+              await supabaseAdmin.from("connections").update({
+                status: recovered?.status ?? "connecting",
+                ...(recovered?.status === "online" ? { qr_code: null } : {}),
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instance,
+                  evolution_state: recovered?.state ?? "reconnecting",
+                  auto_reconnect_at: new Date().toISOString(),
+                },
+              }).eq("id", row.connection_id);
+              await supabaseAdmin.from("scheduled_messages").update({
+                status: "pending",
+                scheduled_at: new Date(Date.now() + 30_000).toISOString(),
+                last_error: "Reconectando WhatsApp sem novo QR; envio será tentado novamente",
+                attempts: (row.attempts ?? 0) + 1,
+              }).eq("id", row.id);
+              continue;
+            }
             await supabaseAdmin.from("scheduled_messages").update({
               status: "failed", last_error: String(e?.message ?? "erro"), attempts: (row.attempts ?? 0) + 1,
             }).eq("id", row.id);

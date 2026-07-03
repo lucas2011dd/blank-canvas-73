@@ -60,6 +60,19 @@ function stateNeedsQr(state: unknown): boolean {
   );
 }
 
+function stateIndicatesSessionRemoved(state: unknown): boolean {
+  const s = String(state ?? "").trim().toLowerCase();
+  return (
+    s.includes("device_removed") ||
+    s.includes("logged out") ||
+    s.includes("logged_out") ||
+    s.includes("logout") ||
+    s.includes("removed") ||
+    s.includes("unpaired") ||
+    s.includes("401")
+  );
+}
+
 async function getFreshWhatsappQr(
   evolution: typeof import("@/lib/evolution.server").evolution,
   extractQrImage: typeof import("@/lib/evolution.server").extractQrImage,
@@ -175,7 +188,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     // Reconexão NÃO destrutiva: nunca apaga/recria uma sessão existente aqui.
     // Apagar a instância força o WhatsApp a pedir QR de novo e foi a causa de
     // sessões ainda válidas caírem apenas dentro do ConnectHub.
-    const { evolution, extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const { evolution, extractQrImage, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
     const { data: existing } = await context.supabase
       .from("connections")
       .select("metadata,status")
@@ -201,7 +214,19 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       throw new Error("Servidor WhatsApp indisponível no momento; mantive a sessão atual sem gerar novo QR.");
     }
 
-    if (status === "offline" || stateNeedsQr(state)) {
+    if (status !== "online") {
+      const recovered = await reconnectEvolutionSession(name, { attempts: 3, delayMs: 1_000 }).catch(() => null);
+      if (recovered?.status === "online") {
+        status = "online";
+        qrBase64 = null;
+        state = recovered.state;
+      } else {
+        status = recovered?.status ?? status;
+        state = recovered?.state ?? state;
+      }
+    }
+
+    if (status === "offline" && stateIndicatesSessionRemoved(state)) {
       const connected = await evolution.connect(name).catch(() => null);
       qrBase64 = await extractQrImage(connected);
       if (!qrBase64) {

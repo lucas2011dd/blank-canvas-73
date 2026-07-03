@@ -145,6 +145,17 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
           } else if (event === "qrcode.updated" || event === "QRCODE_UPDATED") {
             const { extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
             const resolved = await resolveEvolutionStatus(instanceName).catch(() => null);
+            const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
+              supabaseAdmin.from("broadcasts")
+                .select("id", { count: "exact", head: true })
+                .eq("connection_id", conn.id)
+                .eq("status", "running"),
+              supabaseAdmin.from("group_migrations")
+                .select("id", { count: "exact", head: true })
+                .eq("connection_id", conn.id)
+                .eq("status", "running"),
+            ]);
+            const hasActiveAutomation = Boolean((activeBroadcasts ?? 0) + (activeMigrations ?? 0));
             if (resolved?.status === "online") {
               await supabaseAdmin.from("connections").update({
                 status: "online",
@@ -154,6 +165,24 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
                   evolution_instance: instanceName,
                   evolution_state: resolved.state ?? "online",
+                },
+              }).eq("id", conn.id);
+              return new Response("ok");
+            }
+
+            // Durante migrações/disparos contínuos, QR vindo da Evolution não
+            // deve substituir a sessão: pausamos em "connecting" e deixamos o
+            // tick tentar restart/reload sem pedir novo escaneamento.
+            if (hasActiveAutomation) {
+              await supabaseAdmin.from("connections").update({
+                status: "connecting",
+                qr_code: null,
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instanceName,
+                  evolution_state: resolved?.state ?? "qr_suppressed_during_automation",
+                  qr_suppressed_at: new Date().toISOString(),
                 },
               }).eq("id", conn.id);
               return new Response("ok");

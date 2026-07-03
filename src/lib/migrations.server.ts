@@ -1,7 +1,7 @@
 // Server-only worker para processar 1 batch de uma migração de grupo.
 // É importado dinamicamente por server functions e pelo cron público
 // (/api/public/wa/tick). NUNCA importe no cliente.
-import { evolution, resolveEvolutionStatus } from "@/lib/evolution.server";
+import { evolution, isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } from "@/lib/evolution.server";
 
 function instanceNameFor(id: string) {
   return `ch_${id.replace(/-/g, "")}`;
@@ -27,19 +27,6 @@ function participantPhone(p: any): string {
     p?.jid ??
     p?.id ??
     "",
-  );
-}
-
-function isTransientEvolutionError(error: unknown): boolean {
-  const message = String((error as any)?.message ?? error ?? "").toLowerCase();
-  return (
-    message.includes("connection closed") ||
-    message.includes("connection close") ||
-    message.includes("timed out") ||
-    message.includes("timeout") ||
-    message.includes("socket") ||
-    message.includes("network") ||
-    message.includes("fetch failed")
   );
 }
 
@@ -110,10 +97,23 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   const instance = conn.metadata?.evolution_instance ?? instanceNameFor(mig.connection_id);
 
   const tryReconnect = async () => {
-    // Não chamamos /instance/connect automaticamente durante migrações.
-    // Em Baileys/Evolution isso pode abrir fluxo de QR e invalidar uma sessão
-    // que estava apenas oscilando. O tick/webhook/status real assumem a retomada.
-    return;
+    // Reconecta preservando a sessão: restart/reload da instância, nunca /connect.
+    // /connect abre fluxo de QR em algumas instalações e pode derrubar sessões válidas.
+    const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
+    if (recovered) {
+      await supabase.from("connections").update({
+        status: recovered.status,
+        ...(recovered.status === "online" ? { qr_code: null } : {}),
+        last_sync_at: new Date().toISOString(),
+        metadata: {
+          ...(conn.metadata ?? {}),
+          evolution_instance: instance,
+          evolution_state: recovered.state ?? recovered.status,
+          auto_reconnect_at: new Date().toISOString(),
+        },
+      }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+    }
+    return recovered?.status === "online";
   };
 
   if (conn.status !== "online") {
@@ -123,28 +123,36 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
         await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
       } else {
         const state = await evolution.state(instance).catch(() => null);
-        const mustRescan = resolved.status === "offline" || isLoggedOutEvolutionError(state) || needsManualQr(conn, state);
-        if (!mustRescan) await tryReconnect();
+        const sessionRemoved = isLoggedOutEvolutionError(state) || needsManualQr(conn, state);
+        const recovered = sessionRemoved ? false : await tryReconnect();
+        if (recovered) {
+          await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+        } else {
         const requeued = await requeueTransientFailures(supabase, mig.id);
         await supabase.from("connections").update({ status: resolved.status }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
         await supabase.from("group_migrations").update({
           failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
           next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-          last_error: mustRescan
-            ? "WhatsApp saiu dos aparelhos conectados — escaneie o QR novamente; a migração continua sozinha depois"
-            : "WhatsApp oscilando — aguardando a sessão estabilizar; a fila retoma sozinha em 30s",
+          last_error: sessionRemoved
+            ? "WhatsApp saiu dos aparelhos conectados — pausa mantida sem gerar novo QR automático"
+            : "WhatsApp reconectando sem novo QR — fila retoma sozinha em 30s",
         }).eq("id", mig.id);
         return { migrationId, skipped: true, reason: "connection_offline" };
+        }
       }
     } catch {
-      await tryReconnect();
+      const recovered = await tryReconnect();
+      if (recovered) {
+        await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      } else {
       const requeued = await requeueTransientFailures(supabase, mig.id);
       await supabase.from("group_migrations").update({
         failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
         next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-        last_error: "Evolution indisponível — nova tentativa em 30s",
+        last_error: "Evolution indisponível — tentando reconectar sem novo QR em 30s",
       }).eq("id", mig.id);
       return { migrationId, skipped: true, reason: "connection_offline" };
+      }
     }
   }
 
@@ -152,34 +160,41 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     const resolved = await resolveEvolutionStatus(instance);
     if (resolved.status !== "online") {
       const state = await evolution.state(instance).catch(() => null);
-      const mustRescan = resolved.status === "offline" || needsManualQr(conn, state);
-      if (!mustRescan) await tryReconnect();
+      const sessionRemoved = needsManualQr(conn, state);
+      const recovered = sessionRemoved ? false : await tryReconnect();
+      if (!recovered) {
       const requeued = await requeueTransientFailures(supabase, mig.id);
       await supabase.from("connections").update({ status: resolved.status }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
       await supabase.from("group_migrations").update({
         failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
         next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-        last_error: mustRescan
-          ? "WhatsApp desconectado/removido — escaneie o QR novamente; fila retoma em 30s"
-          : "Conexão oscilou na Evolution — aguardando estabilizar; fila retoma em 30s",
+        last_error: sessionRemoved
+          ? "WhatsApp desconectado/removido — pausa mantida sem gerar novo QR automático"
+          : "Conexão oscilou — reconexão sem novo QR em andamento; fila retoma em 30s",
       }).eq("id", mig.id);
       return { migrationId, skipped: true, reason: "evolution_connection_closed" };
+      }
     }
   } catch (e) {
     if (isLoggedOutEvolutionError(e)) {
       await supabase.from("connections").update({ status: "offline", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
       await supabase.from("group_migrations").update({
         next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-        last_error: "WhatsApp removido dos aparelhos conectados — escaneie o QR novamente; a fila será retomada",
+        last_error: "WhatsApp removido dos aparelhos conectados — pausa mantida sem gerar novo QR automático",
       }).eq("id", mig.id);
       return { migrationId, skipped: true, reason: "device_removed" };
     }
     if (isTransientEvolutionError(e)) {
+      const recovered = await tryReconnect();
+      if (recovered) {
+        await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      } else {
       await supabase.from("group_migrations").update({
         next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-        last_error: "Evolution temporariamente indisponível — retry em 30s",
+        last_error: "Evolution temporariamente indisponível — reconexão sem novo QR em 30s",
       }).eq("id", mig.id);
       return { migrationId, skipped: true, reason: "evolution_temporarily_unavailable" };
+      }
     }
     throw e;
   }
@@ -267,11 +282,13 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     }
   } catch (e: any) {
     if (isTransientEvolutionError(e)) {
-      await tryReconnect();
+      const recovered = await tryReconnect();
       await supabase.from("group_migrations").update({
         failed_count: effectiveFailedCount,
         next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-        last_error: "Conexão caiu durante a adição — retry em 30s, lote mantido pendente",
+        last_error: recovered
+          ? "Conexão recuperada sem novo QR — retry em 30s, lote mantido pendente"
+          : "Conexão caiu durante a adição — reconectando sem novo QR, lote mantido pendente",
       }).eq("id", mig.id);
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true };
     }
