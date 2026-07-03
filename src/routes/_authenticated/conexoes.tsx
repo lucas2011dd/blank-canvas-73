@@ -263,7 +263,59 @@ function Page() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <GroupsDialog connectionId={groupsFor} onClose={() => setGroupsFor(null)} />
     </div>
+  );
+}
+
+function GroupsDialog({ connectionId, onClose }: { connectionId: string | null; onClose: () => void }) {
+  const listGroups = useServerFn(listWhatsappGroups);
+  const toggle = useServerFn(toggleGroupMonitored);
+  const [groups, setGroups] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!connectionId) return;
+    setLoading(true);
+    listGroups({ data: { connectionId } })
+      .then((r) => setGroups(r as any[]))
+      .catch((e) => toast.error(e.message))
+      .finally(() => setLoading(false));
+  }, [connectionId, listGroups]);
+
+  return (
+    <Dialog open={!!connectionId} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><Users className="h-5 w-5" /> Grupos do WhatsApp</DialogTitle></DialogHeader>
+        <div className="max-h-[60vh] space-y-2 overflow-y-auto py-2">
+          {loading && <p className="text-sm text-muted-foreground">Carregando…</p>}
+          {!loading && groups.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              Nenhum grupo sincronizado ainda. Clique em <b>Sincronizar</b> primeiro.
+            </p>
+          )}
+          {groups.map((g) => (
+            <label key={g.id} className="flex items-center justify-between gap-3 rounded-md border p-3 hover:bg-accent">
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium">{g.subject}</p>
+                <p className="text-xs text-muted-foreground">{g.participants_count ?? 0} participantes</p>
+              </div>
+              <Checkbox
+                checked={g.monitored}
+                onCheckedChange={async (v) => {
+                  const monitored = v === true;
+                  setGroups((cur) => cur.map((x) => x.id === g.id ? { ...x, monitored } : x));
+                  try { await toggle({ data: { id: g.id, monitored } }); }
+                  catch (e: any) { toast.error(e.message); }
+                }}
+              />
+            </label>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">Marque para receber mensagens do grupo dentro do chat.</p>
+      </DialogContent>
+    </Dialog>
   );
 }
 
