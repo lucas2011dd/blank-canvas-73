@@ -21,6 +21,33 @@ function stateNeedsQr(state: unknown): boolean {
   );
 }
 
+const ALWAYS_FAST_ACK_EVENTS = new Set([
+  "contacts.upsert",
+  "CONTACTS_UPSERT",
+  "contacts.update",
+  "CONTACTS_UPDATE",
+  "chats.upsert",
+  "CHATS_UPSERT",
+  "chats.update",
+  "CHATS_UPDATE",
+  "groups.upsert",
+  "GROUPS_UPSERT",
+  "group-participants.update",
+  "GROUP_PARTICIPANTS_UPDATE",
+  "messages.set",
+  "MESSAGES_SET",
+  "messages.update",
+  "MESSAGES_UPDATE",
+  "presence.update",
+  "PRESENCE_UPDATE",
+]);
+
+function hasBulkMessagePayload(data: unknown, rawLength: number): boolean {
+  if (rawLength > 100_000) return true;
+  const d: any = data;
+  return Array.isArray(d) || Array.isArray(d?.messages) || Array.isArray(d?.data) || Array.isArray(d?.message);
+}
+
 export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
   server: {
     handlers: {
@@ -36,9 +63,23 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
           return new Response("unauthorized", { status: 401 });
         }
 
+        let raw = "";
         let payload: any = null;
-        try { payload = await request.json(); } catch { /* ignore */ }
+        try {
+          raw = await request.text();
+          payload = raw ? JSON.parse(raw) : null;
+        } catch { /* ignore */ }
         if (!payload) return new Response("bad request", { status: 400 });
+
+        const event: string = payload.event ?? "";
+        const data = payload.data ?? {};
+
+        // ACK imediato para eventos volumosos/ruidosos. Eles não são
+        // necessários para a migração e, quando processados com banco dentro
+        // do webhook, prendem a fila da Evolution por 30s e derrubam a sessão.
+        if (ALWAYS_FAST_ACK_EVENTS.has(event) || ((event === "messages.upsert" || event === "MESSAGES_UPSERT") && hasBulkMessagePayload(data, raw.length))) {
+          return new Response("ok");
+        }
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
         const instanceName = params.instance;
@@ -50,9 +91,6 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
           .eq("metadata->>evolution_instance", instanceName)
           .maybeSingle();
         if (!conn) return new Response("ok"); // nada a fazer
-
-        const event: string = payload.event ?? "";
-        const data = payload.data ?? {};
 
         try {
           if (event === "connection.update" || event === "CONNECTION_UPDATE") {
