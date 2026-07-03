@@ -76,7 +76,9 @@ function Page() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [qr, setQr] = useState<string | null>(null);
+  const [groupsFor, setGroupsFor] = useState<string | null>(null);
   const qrSrc = normalizeQrSrc(qr);
+
 
   const create = useMutation({
     mutationFn: useServerFn(createConnection),
