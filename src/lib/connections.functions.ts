@@ -1,24 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { buildWebhookUrl } from "@/lib/webhook-url";
 
 // Nome da instância na Evolution API é derivado do id da linha.
 function instanceNameFor(id: string) {
   return `ch_${id.replace(/-/g, "")}`;
-}
-
-function webhookUrl(instanceName: string): string | undefined {
-  const previewHost = process.env.LOVABLE_PREVIEW_HOST;
-  const previewBase = previewHost ? `https://${previewHost}` : undefined;
-  const configuredBase = process.env.WHATSAPP_WEBHOOK_PUBLIC_URL ?? process.env.APP_PUBLIC_URL;
-  // Se o projeto ainda não foi publicado, a URL estável project--*.lovable.app
-  // retorna 404. No preview, sempre registre o webhook no host id-preview--*.
-  const configuredPointsToUnpublishedHost = /\/\/project--[^/]+\.lovable\.app/i.test(configuredBase ?? "");
-  const base = configuredPointsToUnpublishedHost && previewBase
-    ? previewBase
-    : (configuredBase ?? previewBase);
-  if (!base) return undefined;
-  return `${base.replace(/\/$/, "")}/api/public/wa/webhook/${instanceName}`;
 }
 
 function digitsOnly(v: unknown): string {
@@ -131,7 +118,7 @@ export const createConnection = createServerFn({ method: "POST" })
         evolutionInstance = name;
 
         // 1) create — já tenta devolver o QR
-        const created = await evolution.createInstance(name, webhookUrl(name)).catch((e: any) => {
+        const created = await evolution.createInstance(name, buildWebhookUrl(name)).catch((e: any) => {
           console.error("[connections] createInstance falhou:", e?.message);
           return null;
         });
@@ -210,6 +197,22 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     let qrBase64: string | null = null;
     let status: "online" | "offline" | "connecting" = existing.status as "online" | "offline" | "connecting";
     let state: string | undefined;
+    let suppressManualQr = false;
+
+    const wh = buildWebhookUrl(name);
+    if (wh) await evolution.setWebhook(name, wh).catch(() => null);
+
+    const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
+      context.supabase.from("broadcasts")
+        .select("id", { count: "exact", head: true })
+        .eq("connection_id", data.id)
+        .eq("status", "running"),
+      context.supabase.from("group_migrations")
+        .select("id", { count: "exact", head: true })
+        .eq("connection_id", data.id)
+        .eq("status", "running"),
+    ]);
+    const hasActiveAutomation = Boolean((activeBroadcasts ?? 0) + (activeMigrations ?? 0));
 
     try {
       const resolved = await resolveEvolutionStatus(name);
@@ -220,7 +223,11 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     }
 
     if (status !== "online") {
-      const recovered = await reconnectEvolutionSession(name, { attempts: 3, delayMs: 1_000 }).catch(() => null);
+      const recovered = await reconnectEvolutionSession(name, {
+        attempts: 3,
+        delayMs: 1_000,
+        allowConnect: !hasActiveAutomation,
+      }).catch(() => null);
       if (recovered?.status === "online") {
         status = "online";
         qrBase64 = null;
@@ -232,12 +239,21 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     }
 
     if (status !== "online") {
+      if (hasActiveAutomation) {
+        status = "connecting";
+        qrBase64 = null;
+        suppressManualQr = true;
+        state = state ?? "silent_reconnect_during_automation";
+      }
+    }
+
+    if (status !== "online" && !suppressManualQr) {
       const connected = await evolution.connect(name).catch(() => null);
       qrBase64 = await extractQrImage(connected);
       if (!qrBase64) {
         const info = await evolution.instanceInfoStrict(name).catch(() => undefined);
         if (info === null) {
-          const created = await evolution.createInstance(name, webhookUrl(name)).catch(() => null);
+          const created = await evolution.createInstance(name, buildWebhookUrl(name)).catch(() => null);
           qrBase64 = await extractQrImage(created);
         }
       }
@@ -355,7 +371,7 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
 
     // (Re)registra o webhook — a instância pode ter sido criada antes de
     // APP_PUBLIC_URL estar configurada.
-    const wh = webhookUrl(name);
+    const wh = buildWebhookUrl(name);
     if (wh) await evolution.setWebhook(name, wh);
 
     const [contactsRaw, chatsRaw, groupsRaw] = await Promise.all([

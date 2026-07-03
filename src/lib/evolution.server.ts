@@ -478,8 +478,6 @@ export function payloadIndicatesPairingLost(source: unknown): boolean {
     haystack.includes("logged_out") ||
     haystack.includes("logged out") ||
     haystack.includes("logout") ||
-    haystack.includes("not_connected") ||
-    haystack.includes("not connected") ||
     haystack.includes("unpaired") ||
     haystack.includes("statusreason\":401") ||
     haystack.includes("statusreason:401") ||
@@ -495,6 +493,10 @@ export function isTransientEvolutionError(error: unknown): boolean {
   return (
     haystack.includes("connection closed") ||
     haystack.includes("connection close") ||
+    haystack.includes("instance is not connected") ||
+    haystack.includes("the instance is not connected") ||
+    haystack.includes("not_connected") ||
+    haystack.includes("not connected") ||
     haystack.includes("timed out") ||
     haystack.includes("timeout") ||
     haystack.includes("socket") ||
@@ -548,16 +550,17 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
 
 export async function reconnectEvolutionSession(
   instanceName: string,
-  options: { attempts?: number; delayMs?: number } = {},
+  options: { attempts?: number; delayMs?: number; allowConnect?: boolean } = {},
 ): Promise<{ status: EvolutionConnectionStatus; state?: string; usable: boolean; restarted: boolean }> {
   const attempts = options.attempts ?? 4;
   const delayMs = options.delayMs ?? 1_500;
+  const allowConnect = options.allowConnect ?? false;
 
   const before = await resolveEvolutionStatus(instanceName).catch(() => null);
   if (before?.status === "online") return { ...before, restarted: false };
 
-  // Reconexão preservando sessão: usa restart/reload da instância, nunca /connect.
-  // /connect pode abrir novo QR em Baileys e invalidar sessões ainda recuperáveis.
+  // Reconexão automática preserva sessão: usa restart/reload. /connect só é
+  // permitido em ação manual, pois em Baileys pode iniciar fluxo de QR.
   // /instance/restart retorna 400 quando a sessão não está conectada.
   // Isso é esperado após queda total — ignoramos e deixamos o chamador decidir
   // se aciona /connect para gerar novo QR.
@@ -569,6 +572,9 @@ export async function reconnectEvolutionSession(
     latest = await resolveEvolutionStatus(instanceName).catch(() => latest);
     if (latest.status === "online") return { ...latest, restarted: true };
     if (payloadIndicatesPairingLost(latest.state)) break;
+    if (allowConnect && attempt === 0) {
+      await evolution.connect(instanceName).catch(() => undefined);
+    }
   }
 
   return { ...latest, restarted: true };
