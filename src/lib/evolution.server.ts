@@ -143,21 +143,21 @@ function urlCandidates(base: string, path: string) {
   const add = (url: string) => {
     if (!candidates.includes(url)) candidates.push(url);
   };
+  add(primary);
   try {
     const url = new URL(primary);
     const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname);
     if (isIp) {
+      const plainIp = new URL(url.toString());
+      plainIp.protocol = "http:";
+      add(plainIp.toString());
+
       const alias = new URL(url.toString());
       alias.protocol = "http:";
       alias.hostname = `${url.hostname.replace(/\./g, "-")}.sslip.io`;
       add(alias.toString());
-
-      const plainIp = new URL(url.toString());
-      plainIp.protocol = "http:";
-      add(plainIp.toString());
     }
   } catch { /* mantém URL original */ }
-  add(primary);
   return candidates;
 }
 
