@@ -6,21 +6,6 @@
 // (ou, se não definido, à própria EVOLUTION_API_KEY — que a Evolution envia).
 import { createFileRoute } from "@tanstack/react-router";
 
-function stateNeedsQr(state: unknown): boolean {
-  const s = String(state ?? "").trim().toLowerCase();
-  return (
-    s.includes("qr") ||
-    s.includes("pair") ||
-    s.includes("not_connected") ||
-    s.includes("not connected") ||
-    s.includes("unpaired") ||
-    s.includes("logged") ||
-    s.includes("logout") ||
-    s.includes("removed") ||
-    s.includes("401")
-  );
-}
-
 const ALWAYS_FAST_ACK_EVENTS = new Set([
   "contacts.upsert",
   "CONTACTS_UPSERT",
