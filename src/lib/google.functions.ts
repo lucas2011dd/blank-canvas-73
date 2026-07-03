@@ -45,6 +45,22 @@ export const googleConnectionStatus = createServerFn({ method: "GET" })
     }
   });
 
+// Gera a URL do Google OAuth com `state` HMAC-assinado (evita CSRF e
+// account-takeover). Frontend chama isto e depois faz window.location = url.
+export const startGoogleOAuth = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ origin: z.string().url() }).parse(d))
+  .handler(async ({ context, data }) => {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (!clientId) throw new Error("GOOGLE_CLIENT_ID não configurado no servidor");
+    const { issueOAuthState } = await import("@/lib/oauth-state.server");
+    const state = issueOAuthState(context.userId);
+    const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT ?? `${data.origin}/api/google/callback`;
+    const scope = encodeURIComponent("https://www.googleapis.com/auth/contacts openid email profile");
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scope}&access_type=offline&prompt=consent&state=${encodeURIComponent(state)}`;
+    return { url };
+  });
+
 export const disconnectGoogle = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
