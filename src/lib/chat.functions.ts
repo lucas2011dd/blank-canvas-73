@@ -56,8 +56,21 @@ export const sendMessage = createServerFn({ method: "POST" })
           failureReason = "conexão não está online";
         } else {
           try {
-            const { evolution } = await import("@/lib/evolution.server");
+            const { evolution, resolveEvolutionStatus } = await import("@/lib/evolution.server");
             const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
+            const resolved = await resolveEvolutionStatus(instance);
+            if (resolved.status !== "online") {
+              await context.supabase.from("connections").update({
+                status: resolved.status,
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instance,
+                  evolution_state: resolved.state ?? resolved.status,
+                },
+              }).eq("id", conn.id).eq("user_id", context.userId);
+              throw new Error("conexão não está online");
+            }
             const title = String(conv.title ?? "");
             let target: string | null = null;
 
@@ -81,6 +94,13 @@ export const sendMessage = createServerFn({ method: "POST" })
             try {
               await evolution.sendText(instance, target, data.body);
             } catch (err: any) {
+              const afterFailure = await resolveEvolutionStatus(instance).catch(() => null);
+              if (afterFailure?.status && afterFailure.status !== "online") {
+                await context.supabase.from("connections").update({
+                  status: afterFailure.status,
+                  last_sync_at: new Date().toISOString(),
+                }).eq("id", conn.id).eq("user_id", context.userId);
+              }
               const raw = String(err?.message ?? "");
               if (raw.includes('"exists":false')) {
                 throw new Error("este número não está no WhatsApp");
