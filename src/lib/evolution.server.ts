@@ -284,6 +284,33 @@ export const evolution = {
     ).catch(() => []);
     return Array.isArray(res) ? res : (res?.groups ?? res?.data ?? []);
   },
+
+  async findGroupInfo(instanceName: string, groupJid: string): Promise<any> {
+    return call<any>(
+      `/group/findGroupInfos/${encodeURIComponent(instanceName)}?groupJid=${encodeURIComponent(groupJid)}`,
+      { method: "GET" },
+    ).catch(() => null);
+  },
+
+  async groupParticipants(instanceName: string, groupJid: string): Promise<Array<{ id: string; jid?: string; admin?: string }>> {
+    const info = await this.findGroupInfo(instanceName, groupJid);
+    const raw = info?.participants ?? info?.data?.participants ?? info?.groupMetadata?.participants ?? [];
+    return Array.isArray(raw) ? raw : [];
+  },
+
+  async createGroup(instanceName: string, subject: string, participants: string[], description?: string): Promise<any> {
+    return call<any>(`/group/create/${encodeURIComponent(instanceName)}`, {
+      method: "POST",
+      body: { subject, description, participants },
+    });
+  },
+
+  async addGroupParticipants(instanceName: string, groupJid: string, participants: string[]): Promise<any> {
+    return call<any>(
+      `/group/updateParticipant/${encodeURIComponent(instanceName)}?groupJid=${encodeURIComponent(groupJid)}`,
+      { method: "POST", body: { action: "add", participants } },
+    );
+  },
 };
 
 export function evolutionStateToStatus(state?: string): "online" | "offline" | "connecting" {

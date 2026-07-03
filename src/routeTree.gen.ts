@@ -15,6 +15,7 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedUsuariosRouteImport } from './routes/_authenticated/usuarios'
+import { Route as AuthenticatedMigracaoGruposRouteImport } from './routes/_authenticated/migracao-grupos'
 import { Route as AuthenticatedLogsRouteImport } from './routes/_authenticated/logs'
 import { Route as AuthenticatedFerramentasRouteImport } from './routes/_authenticated/ferramentas'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
@@ -58,6 +59,12 @@ const AuthenticatedUsuariosRoute = AuthenticatedUsuariosRouteImport.update({
   path: '/usuarios',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedMigracaoGruposRoute =
+  AuthenticatedMigracaoGruposRouteImport.update({
+    id: '/migracao-grupos',
+    path: '/migracao-grupos',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedLogsRoute = AuthenticatedLogsRouteImport.update({
   id: '/logs',
   path: '/logs',
@@ -142,6 +149,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/ferramentas': typeof AuthenticatedFerramentasRoute
   '/logs': typeof AuthenticatedLogsRoute
+  '/migracao-grupos': typeof AuthenticatedMigracaoGruposRoute
   '/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
@@ -162,6 +170,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/ferramentas': typeof AuthenticatedFerramentasRoute
   '/logs': typeof AuthenticatedLogsRoute
+  '/migracao-grupos': typeof AuthenticatedMigracaoGruposRoute
   '/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
@@ -184,6 +193,7 @@ export interface FileRoutesById {
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/ferramentas': typeof AuthenticatedFerramentasRoute
   '/_authenticated/logs': typeof AuthenticatedLogsRoute
+  '/_authenticated/migracao-grupos': typeof AuthenticatedMigracaoGruposRoute
   '/_authenticated/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
@@ -206,6 +216,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/ferramentas'
     | '/logs'
+    | '/migracao-grupos'
     | '/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
@@ -226,6 +237,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/ferramentas'
     | '/logs'
+    | '/migracao-grupos'
     | '/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
@@ -247,6 +259,7 @@ export interface FileRouteTypes {
     | '/_authenticated/dashboard'
     | '/_authenticated/ferramentas'
     | '/_authenticated/logs'
+    | '/_authenticated/migracao-grupos'
     | '/_authenticated/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
@@ -308,6 +321,13 @@ declare module '@tanstack/react-router' {
       path: '/usuarios'
       fullPath: '/usuarios'
       preLoaderRoute: typeof AuthenticatedUsuariosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/migracao-grupos': {
+      id: '/_authenticated/migracao-grupos'
+      path: '/migracao-grupos'
+      fullPath: '/migracao-grupos'
+      preLoaderRoute: typeof AuthenticatedMigracaoGruposRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/logs': {
@@ -414,6 +434,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedFerramentasRoute: typeof AuthenticatedFerramentasRoute
   AuthenticatedLogsRoute: typeof AuthenticatedLogsRoute
+  AuthenticatedMigracaoGruposRoute: typeof AuthenticatedMigracaoGruposRoute
   AuthenticatedUsuariosRoute: typeof AuthenticatedUsuariosRoute
 }
 
@@ -427,6 +448,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedFerramentasRoute: AuthenticatedFerramentasRoute,
   AuthenticatedLogsRoute: AuthenticatedLogsRoute,
+  AuthenticatedMigracaoGruposRoute: AuthenticatedMigracaoGruposRoute,
   AuthenticatedUsuariosRoute: AuthenticatedUsuariosRoute,
 }
 

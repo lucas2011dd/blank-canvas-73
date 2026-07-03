@@ -119,7 +119,25 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           }
         }
 
-        return Response.json({ ok: true, ...summary, at: nowIso });
+        // -------- Migrações de grupo devidas --------
+        const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
+        const { data: migs } = await supabaseAdmin.from("group_migrations")
+          .select("id").eq("status", "running").lte("next_attempt_at", nowIso).limit(5);
+        const migResults: any[] = [];
+        for (const m of migs ?? []) {
+          try {
+            const r = await processGroupMigrationBatch(supabaseAdmin, m.id);
+            migResults.push(r);
+          } catch (e: any) {
+            summary.errors++;
+            await supabaseAdmin.from("group_migrations").update({
+              last_error: String(e?.message ?? "erro"),
+              next_attempt_at: new Date(Date.now() + 60_000).toISOString(),
+            }).eq("id", m.id);
+          }
+        }
+
+        return Response.json({ ok: true, ...summary, migrations: migResults, at: nowIso });
       },
     },
   },
