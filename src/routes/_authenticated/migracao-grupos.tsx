@@ -201,9 +201,13 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
             <option value="">— selecione —</option>
             {groups.map((g: any) => <option key={g.jid} value={g.jid}>{g.subject} ({g.participants_count ?? 0})</option>)}
           </select>
-          {previewQ.data && <p className="text-xs text-muted-foreground mt-1">✅ {previewQ.data.total} participantes serão migrados.</p>}
+          {previewQ.data && (
+            <p className="text-xs text-muted-foreground mt-1">
+              ✅ {previewQ.data.total} participantes encontrados
+              {skipAdmins ? ` · ${previewQ.data.participants.filter((p: any) => p.admin).length} admin(s) serão ignorados` : ""}
+            </p>
+          )}
           {previewQ.error && <p className="text-xs text-destructive mt-1">{(previewQ.error as Error).message}</p>}
-        </div>
 
         <div>
           <Label>Destino</Label>
