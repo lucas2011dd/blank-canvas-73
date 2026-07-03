@@ -72,10 +72,21 @@ export const sendMessage = createServerFn({ method: "POST" })
             } else {
               const phone = title.replace(/\D/g, "");
               if (!phone) throw new Error("número inválido no título da conversa");
+              if (phone.length < 8 || phone.length > 15) {
+                throw new Error("este contato não é um número WhatsApp válido (provavelmente é um ID interno @lid). Reenvie a mensagem a partir do contato salvo.");
+              }
               target = phone;
             }
 
-            await evolution.sendText(instance, target, data.body);
+            try {
+              await evolution.sendText(instance, target, data.body);
+            } catch (err: any) {
+              const raw = String(err?.message ?? "");
+              if (raw.includes('"exists":false')) {
+                throw new Error("este número não está no WhatsApp");
+              }
+              throw err;
+            }
           } catch (e: any) {
             status = "failed";
             failureReason = e?.message ?? "falha desconhecida";
