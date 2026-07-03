@@ -15,8 +15,17 @@ export const listMessages = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ conversationId: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
+    // Verifica ownership da conversa antes de ler mensagens (defense-in-depth
+    // além do RLS). Sem isso, um userId autenticado poderia iterar UUIDs.
+    const { data: conv } = await context.supabase
+      .from("conversations").select("id")
+      .eq("id", data.conversationId).eq("user_id", context.userId).maybeSingle();
+    if (!conv) throw new Error("Conversa não encontrada");
     const { data: rows, error } = await context.supabase
-      .from("messages").select("*").eq("conversation_id", data.conversationId).order("created_at");
+      .from("messages").select("*")
+      .eq("conversation_id", data.conversationId)
+      .eq("user_id", context.userId)
+      .order("created_at");
     if (error) throw new Error(error.message);
     return rows ?? [];
   });

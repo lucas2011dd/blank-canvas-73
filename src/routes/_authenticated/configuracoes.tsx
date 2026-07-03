@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { createApiKey, getMyProfile, listApiKeys, revokeApiKey, updateMyProfile } from "@/lib/settings.functions";
-import { disconnectGoogle, exportContactsToGoogle, googleConnectionStatus, importGoogleContacts } from "@/lib/google.functions";
+import { disconnectGoogle, exportContactsToGoogle, googleConnectionStatus, importGoogleContacts, startGoogleOAuth } from "@/lib/google.functions";
 import { useTheme } from "@/components/theme-provider";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
@@ -148,7 +148,12 @@ function IntegrationsTab() {
         <CardContent className="space-y-3">
           {!status.connected ? (
             <>
-              <Button onClick={() => { window.location.href = `/api/google/authorize?uid=${user?.id ?? ""}`; }}>
+              <Button onClick={async () => {
+                try {
+                  const { url } = await startGoogleOAuth({ data: { origin: window.location.origin } });
+                  window.location.href = url;
+                } catch (e: any) { toast.error(e?.message ?? "Falha ao iniciar OAuth"); }
+              }}>
                 Vincular conta Google
               </Button>
               <p className="text-xs text-muted-foreground">

@@ -10,10 +10,11 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
   server: {
     handlers: {
       POST: async ({ request, params }) => {
+        // FAIL-CLOSED: se nenhum segredo estiver configurado, rejeita.
         const expected =
           process.env.EVOLUTION_WEBHOOK_SECRET ?? process.env.EVOLUTION_API_KEY ?? "";
         const got = request.headers.get("apikey") ?? "";
-        if (expected && got !== expected) {
+        if (!expected || got !== expected) {
           return new Response("unauthorized", { status: 401 });
         }
 
