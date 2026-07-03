@@ -298,9 +298,8 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       if (phone) byPhone[phone] = item;
     }
 
-    // Nunca chamar groupParticipants() após addGroupParticipants(). A segunda
-    // chamada derruba o stream da Evolution (device_removed / 401). A decisão
-    // de sucesso/falha vem 100% do retorno do próprio addGroupParticipants().
+    // Não fazer nenhuma leitura de participantes após o add. A decisão de
+    // sucesso/falha vem 100% do retorno do próprio addGroupParticipants().
     for (const t of batch) {
       const expectedPhone = sendPhoneFor(t.phone);
       const resolvedIt = byPhone[expectedPhone] ?? byPhone[t.phone];
