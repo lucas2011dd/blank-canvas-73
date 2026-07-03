@@ -110,6 +110,8 @@ function webhookAuthHeaders(key: string) {
   return {
     apikey: secret,
     "x-evolution-webhook-secret": secret,
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ConnectHub-Webhook/1.0",
+    Accept: "application/json, text/plain, */*",
   };
 }
 
