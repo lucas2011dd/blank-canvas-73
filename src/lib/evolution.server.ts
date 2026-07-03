@@ -272,6 +272,19 @@ export const evolution = {
     }
   },
 
+  async fetchInstances(): Promise<any[]> {
+    const res = await call<any>("/instance/fetchInstances").catch(() => []);
+    return Array.isArray(res) ? res : (res?.instances ?? res?.data ?? []);
+  },
+
+  async instanceInfo(instanceName: string): Promise<any | null> {
+    const list = await this.fetchInstances();
+    return list.find((row: any) => {
+      const name = row?.name ?? row?.instanceName ?? row?.instance?.instanceName ?? row?.instance?.name;
+      return name === instanceName;
+    }) ?? null;
+  },
+
   async logout(instanceName: string) {
     return call(`/instance/logout/${encodeURIComponent(instanceName)}`, { method: "DELETE" });
   },
@@ -375,6 +388,16 @@ export function extractEvolutionConnectionState(source: unknown): string | undef
   );
 }
 
+function hasUsablePairing(source: unknown): boolean {
+  const s: any = source;
+  const reason = String(s?.disconnectionReasonCode ?? s?.instance?.disconnectionReasonCode ?? "").trim();
+  const disconnectedAsLoggedOut = reason === "401" || reason === "403";
+  const owner = firstString(s?.ownerJid, s?.owner, s?.profileName, s?.number, s?.instance?.ownerJid, s?.instance?.profileName);
+  const counts = s?._count ?? s?.count ?? {};
+  const hasSyncedRows = Number(counts?.Contact ?? counts?.contacts ?? 0) > 0 || Number(counts?.Chat ?? counts?.chats ?? 0) > 0;
+  return !disconnectedAsLoggedOut && Boolean(owner || hasSyncedRows);
+}
+
 export function evolutionStateToStatus(state?: string): EvolutionConnectionStatus {
   const normalized = String(state ?? "").trim().toLowerCase();
   if (!normalized) return "offline";
@@ -409,6 +432,11 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
   } catch {
     // cai para o probe abaixo: algumas instâncias respondem mal ao
     // connectionState, mas aceitam operações reais de chat/grupo.
+  }
+
+  const info = await evolution.instanceInfo(instanceName).catch(() => null);
+  if (hasUsablePairing(info)) {
+    return { status: "online", state: extractEvolutionConnectionState(info) ?? "paired_session", usable: true };
   }
 
   const usable = await evolution.canReadSession(instanceName);
