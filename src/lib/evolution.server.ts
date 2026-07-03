@@ -550,18 +550,17 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
 
 export async function reconnectEvolutionSession(
   instanceName: string,
-  options: { attempts?: number; delayMs?: number } = {},
+  options: { attempts?: number; delayMs?: number; allowConnect?: boolean } = {},
 ): Promise<{ status: EvolutionConnectionStatus; state?: string; usable: boolean; restarted: boolean }> {
   const attempts = options.attempts ?? 4;
   const delayMs = options.delayMs ?? 1_500;
+  const allowConnect = options.allowConnect ?? false;
 
   const before = await resolveEvolutionStatus(instanceName).catch(() => null);
   if (before?.status === "online") return { ...before, restarted: false };
 
-  // Reconexão preservando sessão: primeiro usa restart/reload. Se a Evolution
-  // estiver apenas com socket fechado ("not connected"), um /connect pode só
-  // reabrir a sessão salva; se vier QR, o chamador/webhook não deve persistir
-  // esse QR durante automações em andamento.
+  // Reconexão automática preserva sessão: usa restart/reload. /connect só é
+  // permitido em ação manual, pois em Baileys pode iniciar fluxo de QR.
   // /instance/restart retorna 400 quando a sessão não está conectada.
   // Isso é esperado após queda total — ignoramos e deixamos o chamador decidir
   // se aciona /connect para gerar novo QR.
@@ -573,7 +572,7 @@ export async function reconnectEvolutionSession(
     latest = await resolveEvolutionStatus(instanceName).catch(() => latest);
     if (latest.status === "online") return { ...latest, restarted: true };
     if (payloadIndicatesPairingLost(latest.state)) break;
-    if (attempt === 0) {
+    if (allowConnect && attempt === 0) {
       await evolution.connect(instanceName).catch(() => undefined);
     }
   }

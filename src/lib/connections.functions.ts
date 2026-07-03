@@ -202,6 +202,18 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     const wh = buildWebhookUrl(name);
     if (wh) await evolution.setWebhook(name, wh).catch(() => null);
 
+    const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
+      context.supabase.from("broadcasts")
+        .select("id", { count: "exact", head: true })
+        .eq("connection_id", data.id)
+        .eq("status", "running"),
+      context.supabase.from("group_migrations")
+        .select("id", { count: "exact", head: true })
+        .eq("connection_id", data.id)
+        .eq("status", "running"),
+    ]);
+    const hasActiveAutomation = Boolean((activeBroadcasts ?? 0) + (activeMigrations ?? 0));
+
     try {
       const resolved = await resolveEvolutionStatus(name);
       status = resolved.status;
@@ -211,7 +223,11 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     }
 
     if (status !== "online") {
-      const recovered = await reconnectEvolutionSession(name, { attempts: 3, delayMs: 1_000 }).catch(() => null);
+      const recovered = await reconnectEvolutionSession(name, {
+        attempts: 3,
+        delayMs: 1_000,
+        allowConnect: !hasActiveAutomation,
+      }).catch(() => null);
       if (recovered?.status === "online") {
         status = "online";
         qrBase64 = null;
@@ -223,17 +239,6 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     }
 
     if (status !== "online") {
-      const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
-        context.supabase.from("broadcasts")
-          .select("id", { count: "exact", head: true })
-          .eq("connection_id", data.id)
-          .eq("status", "running"),
-        context.supabase.from("group_migrations")
-          .select("id", { count: "exact", head: true })
-          .eq("connection_id", data.id)
-          .eq("status", "running"),
-      ]);
-      const hasActiveAutomation = Boolean((activeBroadcasts ?? 0) + (activeMigrations ?? 0));
       if (hasActiveAutomation) {
         status = "connecting";
         qrBase64 = null;
