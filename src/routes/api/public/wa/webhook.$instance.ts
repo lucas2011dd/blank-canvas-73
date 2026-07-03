@@ -153,8 +153,6 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               })();
             }
           } else if (event === "qrcode.updated" || event === "QRCODE_UPDATED") {
-            const { extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
-            const resolved = await resolveEvolutionStatus(instanceName).catch(() => null);
             const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
               supabaseAdmin.from("broadcasts")
                 .select("id", { count: "exact", head: true })
@@ -166,6 +164,27 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                 .eq("status", "running"),
             ]);
             const hasActiveAutomation = Boolean((activeBroadcasts ?? 0) + (activeMigrations ?? 0));
+
+            // QR em automação normalmente é ruído de reconnect/timeout. Não
+            // consulte a Evolution nem processe base64 aqui: webhook precisa
+            // responder em milissegundos para não travar a fila da Evolution.
+            if (hasActiveAutomation) {
+              await supabaseAdmin.from("connections").update({
+                status: "connecting",
+                qr_code: null,
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instanceName,
+                  evolution_state: "qr_suppressed_during_automation",
+                  qr_suppressed_at: new Date().toISOString(),
+                },
+              }).eq("id", conn.id);
+              return new Response("ok");
+            }
+
+            const { extractQrImage, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+            const resolved = await resolveEvolutionStatus(instanceName).catch(() => null);
             if (resolved?.status === "online") {
               await supabaseAdmin.from("connections").update({
                 status: "online",
@@ -175,24 +194,6 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
                   evolution_instance: instanceName,
                   evolution_state: resolved.state ?? "online",
-                },
-              }).eq("id", conn.id);
-              return new Response("ok");
-            }
-
-            // Durante migrações/disparos contínuos, QR vindo da Evolution não
-            // deve substituir a sessão: pausamos em "connecting" e deixamos o
-            // tick tentar restart/reload sem pedir novo escaneamento.
-            if (hasActiveAutomation) {
-              await supabaseAdmin.from("connections").update({
-                status: "connecting",
-                qr_code: null,
-                last_sync_at: new Date().toISOString(),
-                metadata: {
-                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
-                  evolution_instance: instanceName,
-                  evolution_state: resolved?.state ?? "qr_suppressed_during_automation",
-                  qr_suppressed_at: new Date().toISOString(),
                 },
               }).eq("id", conn.id);
               return new Response("ok");
@@ -221,6 +222,23 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
             }
           } else if (event === "contacts.upsert" || event === "CONTACTS_UPSERT") {
             const list: any[] = Array.isArray(data) ? data : (data.contacts ?? []);
+            // A Evolution envia dumps enormes de contatos ao parear/sincronizar.
+            // Processar centenas de inserts dentro do webhook estoura 30s,
+            // prende a fila da Evolution e pode causar `device_removed`.
+            // Para payload grande, só confirma recebimento; a sincronização
+            // completa deve rodar por ação/tick fora do webhook crítico.
+            if (list.length > 25) {
+              await supabaseAdmin.from("connections").update({
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instanceName,
+                  contacts_upsert_deferred: list.length,
+                  contacts_upsert_deferred_at: new Date().toISOString(),
+                },
+              }).eq("id", conn.id);
+              return new Response("ok");
+            }
             const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
             for (const c of list) {
               const jid = String(c.remoteJid ?? c.id ?? c.jid ?? "");
