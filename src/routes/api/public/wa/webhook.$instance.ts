@@ -46,10 +46,11 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               ...(status === "online" ? { qr_code: null } : {}),
             }).eq("id", conn.id);
           } else if (event === "qrcode.updated" || event === "QRCODE_UPDATED") {
-            const base64 = data.qrcode?.base64 ?? data.base64 ?? null;
-            if (base64) {
+            const { extractQrImage } = await import("@/lib/evolution.server");
+            const qrImage = await extractQrImage(data);
+            if (qrImage) {
               await supabaseAdmin.from("connections").update({
-                qr_code: base64, status: "connecting", last_sync_at: new Date().toISOString(),
+                qr_code: qrImage, status: "connecting", last_sync_at: new Date().toISOString(),
               }).eq("id", conn.id);
             }
           } else if (event === "messages.upsert" || event === "MESSAGES_UPSERT") {
