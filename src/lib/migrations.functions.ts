@@ -108,7 +108,7 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       if (data.skipAdmins && isAdminParticipant(p)) return false;
       return true;
     });
-    const adminsSkipped = data.skipAdmins ? parts.filter(isAdminParticipant).length : 0;
+
     let allPhones = Array.from(new Set(
       filtered.map((p: any) => jidToPhone(String(p.id ?? p.jid ?? "")))
         .filter((p) => p.length >= 8 && !exclude.has(p))
