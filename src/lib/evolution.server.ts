@@ -266,6 +266,19 @@ export const evolution = {
     return call(`/instance/connect/${encodeURIComponent(instanceName)}`);
   },
 
+  async restart(instanceName: string): Promise<any> {
+    const path = `/instance/restart/${encodeURIComponent(instanceName)}`;
+    let lastError: unknown = null;
+    for (const method of ["POST", "PUT", "GET"] as const) {
+      try {
+        return await call(path, { method, timeoutMs: 20_000 });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Falha ao reiniciar sessão WhatsApp");
+  },
+
   async state(instanceName: string): Promise<any> {
     return call(`/instance/connectionState/${encodeURIComponent(instanceName)}`);
   },
@@ -388,6 +401,8 @@ export const evolution = {
 
 export type EvolutionConnectionStatus = "online" | "offline" | "connecting";
 
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function firstString(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value.trim();
@@ -450,7 +465,7 @@ export function evolutionStateToStatus(state?: string): EvolutionConnectionStatu
   return "offline";
 }
 
-function payloadIndicatesPairingLost(source: unknown): boolean {
+export function payloadIndicatesPairingLost(source: unknown): boolean {
   const haystack = (() => {
     try {
       return JSON.stringify(source).toLowerCase();
@@ -470,6 +485,23 @@ function payloadIndicatesPairingLost(source: unknown): boolean {
     haystack.includes("statusreason:401") ||
     haystack.includes("disconnectreason\":401") ||
     haystack.includes("stream:error") && haystack.includes("401")
+  );
+}
+
+export function isTransientEvolutionError(error: unknown): boolean {
+  const haystack = typeof error === "object" && error !== null
+    ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
+    : String(error ?? "").toLowerCase();
+  return (
+    haystack.includes("connection closed") ||
+    haystack.includes("connection close") ||
+    haystack.includes("timed out") ||
+    haystack.includes("timeout") ||
+    haystack.includes("socket") ||
+    haystack.includes("network") ||
+    haystack.includes("fetch failed") ||
+    haystack.includes("evolution temporariamente") ||
+    haystack.includes("temporarily unavailable")
   );
 }
 
@@ -512,4 +544,29 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
   if (infoStatus === "connecting") return { status: "connecting", state: infoState, usable: false };
   if (statusFromState === "connecting") return { status: "connecting", state, usable: false };
   return { status: "offline", state: state ?? infoState ?? "not_connected", usable: false };
+}
+
+export async function reconnectEvolutionSession(
+  instanceName: string,
+  options: { attempts?: number; delayMs?: number } = {},
+): Promise<{ status: EvolutionConnectionStatus; state?: string; usable: boolean; restarted: boolean }> {
+  const attempts = options.attempts ?? 4;
+  const delayMs = options.delayMs ?? 1_500;
+
+  const before = await resolveEvolutionStatus(instanceName).catch(() => null);
+  if (before?.status === "online") return { ...before, restarted: false };
+
+  // Reconexão preservando sessão: usa restart/reload da instância, nunca /connect.
+  // /connect pode abrir novo QR em Baileys e invalidar sessões ainda recuperáveis.
+  await evolution.restart(instanceName);
+
+  let latest = before ?? { status: "connecting" as EvolutionConnectionStatus, state: "restart_requested", usable: false };
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    await wait(delayMs + attempt * 500);
+    latest = await resolveEvolutionStatus(instanceName).catch(() => latest);
+    if (latest.status === "online") return { ...latest, restarted: true };
+    if (payloadIndicatesPairingLost(latest.state)) break;
+  }
+
+  return { ...latest, restarted: true };
 }
