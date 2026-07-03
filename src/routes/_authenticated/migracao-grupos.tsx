@@ -157,6 +157,10 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
   const [batchSize, setBatchSize] = useState(3);
   const [minDelay, setMinDelay] = useState(45);
   const [maxDelay, setMaxDelay] = useState(120);
+  const [skipAdmins, setSkipAdmins] = useState(true);
+  const [skipSelf, setSkipSelf] = useState(true);
+  const [shuffleOrder, setShuffleOrder] = useState(true);
+  const [maxParticipants, setMaxParticipants] = useState<number | "">("");
 
   const groupsQ = useQuery({
     queryKey: ["wa-groups", connectionId],
