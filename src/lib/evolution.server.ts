@@ -141,6 +141,8 @@ function urlCandidates(base: string, path: string) {
   const add = (url: string) => {
     if (!candidates.includes(url)) candidates.push(url);
   };
+  const cachedBase = EVOLUTION_WORKING_BASE.get(base);
+  if (cachedBase) add(`${cachedBase}${path}`);
   add(primary);
   try {
     const url = new URL(primary);
@@ -159,13 +161,15 @@ function urlCandidates(base: string, path: string) {
   return candidates;
 }
 
+const EVOLUTION_WORKING_BASE: Map<string, string> = (globalThis as any).__evolutionWorkingBase ??= new Map();
+
 async function call<T = any>(
   path: string,
   init: { method?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<T> {
   const { base, key } = env();
   let lastError: Error | null = null;
-  const timeoutMs = init.timeoutMs ?? 15_000;
+  const timeoutMs = init.timeoutMs ?? 10_000;
 
   for (const url of urlCandidates(base, path)) {
     let res: Response;
@@ -188,7 +192,10 @@ async function call<T = any>(
     const text = await res.text();
     let json: any = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* pass */ }
-    if (res.ok) return json as T;
+    if (res.ok) {
+      try { EVOLUTION_WORKING_BASE.set(base, new URL(url).origin); } catch { /* noop */ }
+      return json as T;
+    }
 
     const rawMsg = json?.response?.message ?? json?.message ?? text ?? `HTTP ${res.status}`;
     const msg = Array.isArray(rawMsg) ? rawMsg.map(String).join(" — ") : rawMsg;
