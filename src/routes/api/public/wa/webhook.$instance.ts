@@ -138,7 +138,7 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                 metadata: {
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
                   evolution_instance: instanceName,
-                  evolution_state: resolved.state ?? "usable_session",
+                  evolution_state: resolved.state ?? "online",
                 },
               }).eq("id", conn.id);
               return new Response("ok");

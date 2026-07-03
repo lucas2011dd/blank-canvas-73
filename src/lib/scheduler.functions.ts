@@ -79,7 +79,20 @@ export const runScheduledNow = createServerFn({ method: "POST" })
     if (!conn || conn.status !== "online") throw new Error("Conexão offline");
     const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
 
-    const { evolution } = await import("@/lib/evolution.server");
+    const { evolution, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const resolved = await resolveEvolutionStatus(instance);
+    if (resolved.status !== "online") {
+      await context.supabase.from("connections").update({
+        status: resolved.status,
+        last_sync_at: new Date().toISOString(),
+        metadata: {
+          ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+          evolution_instance: instance,
+          evolution_state: resolved.state ?? resolved.status,
+        },
+      }).eq("id", conn.id).eq("user_id", context.userId);
+      throw new Error("Conexão offline");
+    }
     const target = row.target_kind === "group" ? row.target : row.target;
     try {
       await evolution.sendText(instance, target, row.body);
