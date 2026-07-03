@@ -19,19 +19,20 @@ function automationBatchSize(value: unknown): number {
 }
 
 function automationDelaySeconds(minValue: unknown, maxValue: unknown): number {
-  const minFloor = Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 75);
-  const maxFloor = Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 180);
+  const minFloor = Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 10);
+  const maxFloor = Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 20);
   const min = Math.max(
-    Number.isFinite(Number(minValue)) ? Number(minValue) : 75,
-    Number.isFinite(minFloor) ? minFloor : 75,
+    Number.isFinite(Number(minValue)) ? Number(minValue) : 15,
+    Number.isFinite(minFloor) ? minFloor : 10,
   );
   const max = Math.max(
-    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 180,
-    Number.isFinite(maxFloor) ? maxFloor : 180,
+    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 30,
+    Number.isFinite(maxFloor) ? maxFloor : 20,
     min,
   );
   return jitter(Math.floor(min), Math.floor(max));
 }
+
 
 function digits(value: unknown): string {
   return String(value ?? "").replace(/\D/g, "");
