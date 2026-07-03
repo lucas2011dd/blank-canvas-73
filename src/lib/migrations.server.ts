@@ -44,7 +44,9 @@ function isTransientEvolutionError(error: unknown): boolean {
 }
 
 function isLoggedOutEvolutionError(error: unknown): boolean {
-  const haystack = JSON.stringify(error, Object.getOwnPropertyNames(error as object)).toLowerCase();
+  const haystack = typeof error === "object" && error !== null
+    ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
+    : String(error ?? "").toLowerCase();
   return (
     haystack.includes("device_removed") ||
     haystack.includes("statusreason\":401") ||

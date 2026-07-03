@@ -31,7 +31,7 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
         // Localiza a conexão pelo metadata.evolution_instance
         const { data: conn } = await supabaseAdmin
           .from("connections")
-          .select("id,user_id,status")
+          .select("id,user_id,status,metadata")
           .eq("metadata->>evolution_instance", instanceName)
           .maybeSingle();
         if (!conn) return new Response("ok"); // nada a fazer
@@ -48,6 +48,7 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
             await supabaseAdmin.from("connections").update({
               status, last_sync_at: new Date().toISOString(),
               metadata: {
+                ...((conn.metadata as Record<string, unknown> | null) ?? {}),
                 evolution_instance: instanceName,
                 evolution_state: state,
                 status_reason: data.statusReason ?? data.reason ?? null,
