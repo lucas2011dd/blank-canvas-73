@@ -85,9 +85,10 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
 
                   for (const ch of chatsRaw ?? []) {
                     const jid = String(ch.remoteJid ?? ch.id ?? ch.jid ?? "");
-                    if (!jid || jid.endsWith("@g.us") || jid === "status@broadcast") continue;
+                    if (!jid || jid.endsWith("@g.us") || jid.endsWith("@lid") || jid.endsWith("@newsletter") || jid === "status@broadcast") continue;
+                    if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@c.us") && jid.includes("@")) continue;
                     const phone = digits(jid.split("@")[0]);
-                    if (!phone) continue;
+                    if (!phone || phone.length < 8 || phone.length > 15) continue;
                     const { data: exists } = await supabaseAdmin.from("conversations").select("id")
                       .eq("user_id", conn.user_id).eq("connection_id", conn.id).eq("title", phone).maybeSingle();
                     if (!exists) {

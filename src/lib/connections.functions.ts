@@ -311,9 +311,11 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
     const seenTitles = new Set<string>();
     for (const ch of chatsRaw ?? []) {
       const jid = String(ch.remoteJid ?? ch.id ?? ch.jid ?? "");
-      if (!jid || jid.endsWith("@g.us") || jid === "status@broadcast") continue;
+      if (!jid || jid.endsWith("@g.us") || jid.endsWith("@lid") || jid.endsWith("@newsletter") || jid === "status@broadcast") continue;
+      // Só telefones reais (E.164 curto: 8–15 dígitos). LID e sintéticos ficam de fora.
+      if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@c.us") && jid.includes("@")) continue;
       const phone = digitsOnly(jid.split("@")[0]);
-      if (!phone || seenTitles.has(phone)) continue;
+      if (!phone || phone.length < 8 || phone.length > 15 || seenTitles.has(phone)) continue;
       seenTitles.add(phone);
       const ts = ch.updatedAt ?? ch.lastMessageTimestamp ?? ch.t ?? ch.messageTimestamp;
       convRows.push({
