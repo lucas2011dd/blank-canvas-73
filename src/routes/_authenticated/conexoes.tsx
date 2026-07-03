@@ -3,6 +3,7 @@ import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@ta
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
 import { Plus, RefreshCw, Trash2, QrCode, Circle } from "lucide-react";
+import qrGen from "qrcode-generator";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -18,6 +19,46 @@ import {
 
 const q = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
 
+function rawCodeToSvgDataUrl(text: string): string {
+  const qr = qrGen(0, "M");
+  qr.addData(text);
+  qr.make();
+  const count = qr.getModuleCount();
+  const cell = 8;
+  const margin = 16;
+  const size = count * cell + margin * 2;
+  const rects: string[] = [];
+  for (let r = 0; r < count; r++) {
+    for (let c = 0; c < count; c++) {
+      if (qr.isDark(r, c)) rects.push(`<rect x="${margin + c * cell}" y="${margin + r * cell}" width="${cell}" height="${cell}"/>`);
+    }
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">${rects.join("")}</g></svg>`;
+  return `data:image/svg+xml;base64,${window.btoa(svg)}`;
+}
+
+function normalizeQrSrc(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("data:image/")) return trimmed;
+  if (trimmed.startsWith("<svg")) return `data:image/svg+xml;base64,${window.btoa(trimmed)}`;
+
+  const compact = trimmed.replace(/\s/g, "");
+  const looksLikeImageBase64 = (
+    compact.startsWith("iVBORw0KGgo") ||
+    compact.startsWith("/9j/") ||
+    compact.startsWith("R0lGOD") ||
+    compact.startsWith("PHN2Zy") ||
+    compact.length > 800
+  ) && /^[A-Za-z0-9+/]+=*$/.test(compact);
+  if (looksLikeImageBase64) {
+    const mime = compact.startsWith("PHN2Zy") ? "image/svg+xml" : "image/png";
+    return `data:${mime};base64,${compact}`;
+  }
+
+  return rawCodeToSvgDataUrl(trimmed);
+}
+
 export const Route = createFileRoute("/_authenticated/conexoes")({
   head: () => ({ meta: [{ title: "Conexões — ConnectHub" }] }),
   loader: ({ context }) => context.queryClient.ensureQueryData(q),
@@ -31,6 +72,7 @@ function Page() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [qr, setQr] = useState<string | null>(null);
+  const qrSrc = normalizeQrSrc(qr);
 
   const create = useMutation({
     mutationFn: useServerFn(createConnection),
@@ -51,7 +93,8 @@ function Page() {
     mutationFn: useServerFn(reconnectConnection),
     onSuccess: (row: any) => {
       if (row?.qr_code) setQr(row.qr_code);
-      else toast.error("QR não retornou. Verifique se a instância está offline e tente Desconectar → Reconectar.");
+      else if (row?.status === "online") toast.success("WhatsApp já está online.");
+      else toast.error("A Evolution não retornou QR nesta tentativa. A instância foi recriada; clique em Reconectar novamente se necessário.");
       qc.invalidateQueries({ queryKey: ["connections"] });
     },
     onError: (e) => toast.error(e.message),
@@ -169,12 +212,13 @@ function Page() {
           <DialogHeader><DialogTitle className="flex items-center gap-2"><QrCode className="h-5 w-5" /> Escaneie o QR Code</DialogTitle></DialogHeader>
           <div className="flex flex-col items-center gap-3 py-4">
             <div className="rounded-lg bg-white p-4">
-              {qr ? (
+              {qrSrc ? (
                 <img
                   alt="QR"
                   width={260}
                   height={260}
-                  src={qr.startsWith("data:") ? qr : `data:image/png;base64,${qr}`}
+                  className="block h-[260px] w-[260px]"
+                  src={qrSrc}
                 />
               ) : null}
             </div>
