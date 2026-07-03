@@ -91,9 +91,11 @@ function ChatPage() {
   const whatsapps = useMemo(() => connections.filter((c: any) => c.provider === "whatsapp"), [connections]);
 
   return (
-    <div className="h-[calc(100vh-8rem)]">
-      <div className="grid h-full grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
-        <Card className="flex flex-col overflow-hidden">
+    // Altura fluida via dvh (respeita a chrome do mobile) descontando header (3.5rem) + padding (2rem)
+    <div className="h-[calc(100dvh-6rem)] sm:h-[calc(100dvh-7rem)]">
+      {/* Mobile: pilha única mostrando a lista OU a conversa selecionada. Desktop (lg+): duas colunas. */}
+      <div className="grid h-full grid-cols-1 gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+        <Card className={`flex flex-col overflow-hidden min-w-0 ${selected ? "hidden lg:flex" : "flex"}`}>
           <div className="border-b p-3">
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
@@ -167,9 +169,9 @@ function ChatPage() {
           </ScrollArea>
         </Card>
 
-        <Card className="flex flex-col overflow-hidden">
+        <Card className={`flex flex-col overflow-hidden min-w-0 ${selected ? "flex" : "hidden lg:flex"}`}>
           {selected ? (
-            <ConvPane id={selected} connection={connections.find((c: any) => c.id === conversations.find((cv) => cv.id === selected)?.connection_id)} />
+            <ConvPane id={selected} onBack={() => setSelected(null)} connection={connections.find((c: any) => c.id === conversations.find((cv) => cv.id === selected)?.connection_id)} />
           ) : (
             <div className="flex flex-1 items-center justify-center text-muted-foreground">Selecione ou crie uma conversa</div>
           )}
@@ -179,7 +181,7 @@ function ChatPage() {
   );
 }
 
-function ConvPane({ id, connection }: { id: string; connection?: any }) {
+function ConvPane({ id, connection, onBack }: { id: string; connection?: any; onBack?: () => void }) {
   const qc = useQueryClient();
   const { data: msgs = [] } = useQuery({ queryKey: ["messages", id], queryFn: () => listMessages({ data: { conversationId: id } }) });
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -194,11 +196,16 @@ function ConvPane({ id, connection }: { id: string; connection?: any }) {
 
   return (
     <>
-      {connection && (
-        <div className="flex items-center gap-2 border-b bg-muted/50 px-4 py-2 text-xs">
-          <Link2 className="h-3 w-3" />
-          <span>Vinculada a <strong>{connection.name}</strong></span>
-          <Badge variant={connection.status === "online" ? "default" : "outline"}>{connection.status}</Badge>
+      {(connection || onBack) && (
+        <div className="flex items-center gap-2 border-b bg-muted/50 px-3 py-2 text-xs">
+          {onBack && (
+            <button type="button" onClick={onBack} className="lg:hidden rounded-md border px-2 py-1 text-xs min-h-11 min-w-11 inline-flex items-center justify-center" aria-label="Voltar">←</button>
+          )}
+          {connection && <>
+            <Link2 className="h-3 w-3 shrink-0" />
+            <span className="truncate min-w-0">Vinculada a <strong>{connection.name}</strong></span>
+            <Badge variant={connection.status === "online" ? "default" : "outline"} className="shrink-0">{connection.status}</Badge>
+          </>}
         </div>
       )}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-2">
@@ -206,7 +213,7 @@ function ConvPane({ id, connection }: { id: string; connection?: any }) {
           <div className="mt-20 text-center text-sm text-muted-foreground">Nenhuma mensagem ainda.</div>
         ) : msgs.map((m) => (
           <div key={m.id} className={`flex ${m.direction === "outbound" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[70%] rounded-2xl px-3 py-2 text-sm ${m.direction === "outbound" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
+            <div className={`max-w-[85%] sm:max-w-[70%] break-words rounded-2xl px-3 py-2 text-sm ${m.direction === "outbound" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
               {m.body}
               <div className="mt-1 text-[10px] opacity-70">
                 {new Date(m.created_at).toLocaleTimeString("pt-BR")}

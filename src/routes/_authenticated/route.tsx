@@ -43,10 +43,11 @@ function Layout() {
 
   return (
     <SidebarProvider>
-      <div className="min-h-screen flex w-full">
+      {/* min-h-dvh evita "corte" no mobile por causa da barra dinâmica do Safari */}
+      <div className="min-h-dvh flex w-full overflow-x-hidden">
         <AppSidebar />
-        <SidebarInset>
-          <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-background/80 px-4 backdrop-blur">
+        <SidebarInset className="min-w-0">
+          <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-background/80 px-3 sm:px-4 backdrop-blur">
             <div className="flex items-center gap-2">
               <SidebarTrigger />
             </div>
@@ -54,7 +55,8 @@ function Layout() {
               <ThemeToggle />
             </div>
           </header>
-          <main className="flex-1 p-6">
+          {/* Padding fluido: 1rem no mobile → 1.5rem no desktop; min-w-0 impede overflow horizontal quando filhos usam grid/flex */}
+          <main className="flex-1 min-w-0 p-4 sm:p-6">
             <Outlet />
           </main>
         </SidebarInset>
