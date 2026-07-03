@@ -708,7 +708,7 @@ export async function reconnectEvolutionSession(
 
   const before = await resolveEvolutionStatus(instanceName).catch(() => null);
   if (before?.status === "online") return { ...before, restarted: false };
-  if (isPairingLostEvolutionState(before?.state)) return { ...before, restarted: false };
+  if (before && isPairingLostEvolutionState(before.state)) return { ...before, restarted: false };
 
   // Reconexão automática preserva sessão: usa restart/reload. /connect só é
   // permitido em ação manual, pois em Baileys pode iniciar fluxo de QR.
