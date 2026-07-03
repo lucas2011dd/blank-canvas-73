@@ -150,7 +150,8 @@ async function call<T = any>(
     try { json = text ? JSON.parse(text) : null; } catch { /* pass */ }
     if (res.ok) return json as T;
 
-    const msg = json?.response?.message?.[0] ?? json?.message ?? text ?? `HTTP ${res.status}`;
+    const rawMsg = json?.response?.message ?? json?.message ?? text ?? `HTTP ${res.status}`;
+    const msg = Array.isArray(rawMsg) ? rawMsg.map(String).join(" — ") : rawMsg;
     lastError = new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
     if (!/error code:\s*1003/i.test(lastError.message)) {
       throw lastError;

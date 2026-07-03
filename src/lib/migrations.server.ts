@@ -30,6 +30,36 @@ function participantPhone(p: any): string {
   );
 }
 
+function isTransientEvolutionError(error: unknown): boolean {
+  const message = String((error as any)?.message ?? error ?? "").toLowerCase();
+  return (
+    message.includes("connection closed") ||
+    message.includes("connection close") ||
+    message.includes("timed out") ||
+    message.includes("timeout") ||
+    message.includes("socket") ||
+    message.includes("network") ||
+    message.includes("fetch failed")
+  );
+}
+
+async function requeueTransientFailures(supabase: any, migrationId: string) {
+  const { data: failedRows } = await supabase.from("group_migration_targets")
+    .select("id,error")
+    .eq("migration_id", migrationId)
+    .eq("status", "failed")
+    .or("error.ilike.%Connection Closed%,error.ilike.%Connection Close%,error.ilike.%timeout%,error.ilike.%socket%,error.ilike.%Error updating participants%,error.eq.");
+
+  if (!failedRows?.length) return 0;
+
+  await supabase.from("group_migration_targets").update({
+    status: "pending",
+    error: null,
+  }).in("id", failedRows.map((row: any) => row.id));
+
+  return failedRows.length;
+}
+
 export async function processGroupMigrationBatch(supabase: any, migrationId: string, userIdScope?: string) {
   let q = supabase.from("group_migrations").select("*").eq("id", migrationId);
   if (userIdScope) q = q.eq("user_id", userIdScope);
@@ -50,14 +80,59 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     .eq("user_id", mig.user_id)
     .maybeSingle();
   if (!conn) throw new Error("Conexão não encontrada");
-  if (conn.status !== "online") {
-    await supabase.from("group_migrations").update({
-      next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-      last_error: "Conexão offline — reagendado em 5min",
-    }).eq("id", mig.id);
-    return { migrationId, skipped: true, reason: "connection_offline" };
-  }
   const instance = conn.metadata?.evolution_instance ?? instanceNameFor(mig.connection_id);
+
+  if (conn.status !== "online") {
+    try {
+      const state = await evolution.state(instance);
+      if (state?.instance?.state === "open") {
+        await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      } else {
+        const requeued = await requeueTransientFailures(supabase, mig.id);
+        await supabase.from("connections").update({ status: state?.instance?.state === "connecting" ? "connecting" : "offline" }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+        await supabase.from("group_migrations").update({
+          failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
+          next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+          last_error: "Conexão offline — reconecte o WhatsApp e a migração continuará automaticamente",
+        }).eq("id", mig.id);
+        return { migrationId, skipped: true, reason: "connection_offline" };
+      }
+    } catch {
+      const requeued = await requeueTransientFailures(supabase, mig.id);
+      await supabase.from("group_migrations").update({
+        failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
+        next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+        last_error: "Conexão offline — reagendado em 5min",
+      }).eq("id", mig.id);
+      return { migrationId, skipped: true, reason: "connection_offline" };
+    }
+  }
+
+  try {
+    const state = await evolution.state(instance);
+    if (state?.instance?.state !== "open") {
+      const requeued = await requeueTransientFailures(supabase, mig.id);
+      await supabase.from("connections").update({ status: "offline" }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      await supabase.from("group_migrations").update({
+        failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
+        next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+        last_error: "Conexão WhatsApp fechada na Evolution — reconecte e o processamento continuará sem perder a fila",
+      }).eq("id", mig.id);
+      return { migrationId, skipped: true, reason: "evolution_connection_closed" };
+    }
+  } catch (e) {
+    if (isTransientEvolutionError(e)) {
+      await supabase.from("group_migrations").update({
+        next_attempt_at: new Date(Date.now() + 2 * 60_000).toISOString(),
+        last_error: "Evolution temporariamente indisponível — nova tentativa automática agendada",
+      }).eq("id", mig.id);
+      return { migrationId, skipped: true, reason: "evolution_temporarily_unavailable" };
+    }
+    throw e;
+  }
+
+  const requeued = await requeueTransientFailures(supabase, mig.id);
+  const effectiveFailedCount = Math.max(0, (mig.failed_count ?? 0) - requeued);
 
   const { data: batch } = await supabase.from("group_migration_targets")
     .select("*").eq("migration_id", mig.id).eq("status", "pending").limit(mig.batch_size ?? 3);
@@ -137,6 +212,14 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       }
     }
   } catch (e: any) {
+    if (isTransientEvolutionError(e)) {
+      await supabase.from("group_migrations").update({
+        failed_count: effectiveFailedCount,
+        next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+        last_error: "Conexão caiu durante a adição — lote mantido pendente para tentar novamente",
+      }).eq("id", mig.id);
+      return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true };
+    }
     for (const t of batch) {
       await supabase.from("group_migration_targets").update({
         status: "failed", error: String(e?.message ?? "erro"),
@@ -146,13 +229,13 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   }
 
   const nextAt = new Date(Date.now() + jitter(mig.min_delay_seconds ?? 45, mig.max_delay_seconds ?? 120) * 1000).toISOString();
-  const totalDone = (mig.added_count ?? 0) + added + (mig.failed_count ?? 0) + failed + (mig.skipped_count ?? 0) + skipped;
+  const totalDone = (mig.added_count ?? 0) + added + effectiveFailedCount + failed + (mig.skipped_count ?? 0) + skipped;
   const done = totalDone >= (mig.total ?? 0);
 
   await supabase.from("group_migrations").update({
     status: done ? "completed" : "running",
     added_count: (mig.added_count ?? 0) + added,
-    failed_count: (mig.failed_count ?? 0) + failed,
+    failed_count: effectiveFailedCount + failed,
     skipped_count: (mig.skipped_count ?? 0) + skipped,
     next_attempt_at: done ? null : nextAt,
     finished_at: done ? new Date().toISOString() : null,
