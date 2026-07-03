@@ -224,3 +224,141 @@ export const disconnectConnection = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     return { ok: true };
   });
+
+// Sincroniza contatos, conversas e grupos da Evolution para o Supabase.
+// Também (re)registra o webhook público — resolve o caso "conectei mas não
+// aparece nada".
+export const syncWhatsappConnection = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { evolution } = await import("@/lib/evolution.server");
+    const name = instanceNameFor(data.id);
+
+    // (Re)registra o webhook — a instância pode ter sido criada antes de
+    // APP_PUBLIC_URL estar configurada.
+    const wh = webhookUrl(name);
+    if (wh) await evolution.setWebhook(name, wh);
+
+    const [contactsRaw, chatsRaw, groupsRaw] = await Promise.all([
+      evolution.findContacts(name),
+      evolution.findChats(name),
+      evolution.fetchAllGroups(name),
+    ]);
+
+    // ---------- Contatos ----------
+    let contactsUpserted = 0;
+    const contactRows: Array<{
+      user_id: string; name: string; phone: string;
+      external_source: string; external_id: string;
+      metadata: Record<string, unknown>;
+    }> = [];
+    for (const c of contactsRaw ?? []) {
+      const jid = String(c.remoteJid ?? c.id ?? c.jid ?? "");
+      if (!jid || jid.endsWith("@g.us") || jid === "status@broadcast") continue;
+      const phone = digitsOnly(jid.split("@")[0]);
+      if (!phone) continue;
+      contactRows.push({
+        user_id: context.userId,
+        name: String(c.pushName ?? c.name ?? c.notify ?? phone),
+        phone,
+        external_source: "whatsapp",
+        external_id: jid,
+        metadata: { profile_pic: c.profilePicUrl ?? null },
+      });
+    }
+    if (contactRows.length) {
+      // Insere só o que ainda não existe (por phone) — mantém edições do usuário.
+      const phones = Array.from(new Set(contactRows.map((r) => r.phone)));
+      const { data: existing } = await context.supabase
+        .from("contacts")
+        .select("phone")
+        .eq("user_id", context.userId)
+        .in("phone", phones);
+      const existingSet = new Set((existing ?? []).map((r: any) => r.phone));
+      const toInsert = contactRows.filter((r) => !existingSet.has(r.phone));
+      if (toInsert.length) {
+        const { error } = await context.supabase.from("contacts").insert(toInsert);
+        if (!error) contactsUpserted = toInsert.length;
+      }
+    }
+
+    // ---------- Conversas (chats individuais) ----------
+    let conversationsUpserted = 0;
+    for (const ch of chatsRaw ?? []) {
+      const jid = String(ch.remoteJid ?? ch.id ?? ch.jid ?? "");
+      if (!jid || jid.endsWith("@g.us") || jid === "status@broadcast") continue;
+      const phone = digitsOnly(jid.split("@")[0]);
+      if (!phone) continue;
+      const { data: existing } = await context.supabase
+        .from("conversations").select("id")
+        .eq("user_id", context.userId)
+        .eq("connection_id", data.id)
+        .eq("title", phone).maybeSingle();
+      if (existing) continue;
+      const { error } = await context.supabase.from("conversations").insert({
+        user_id: context.userId,
+        connection_id: data.id,
+        title: phone,
+        last_message_at: ch.updatedAt ?? ch.lastMessageTimestamp
+          ? new Date(Number(ch.updatedAt ?? ch.lastMessageTimestamp) * (String(ch.updatedAt ?? ch.lastMessageTimestamp).length <= 10 ? 1000 : 1)).toISOString()
+          : new Date().toISOString(),
+      });
+      if (!error) conversationsUpserted++;
+    }
+
+    // ---------- Grupos ----------
+    let groupsUpserted = 0;
+    for (const g of groupsRaw ?? []) {
+      const jid = String(g.id ?? g.remoteJid ?? "");
+      if (!jid.endsWith("@g.us")) continue;
+      const { error } = await context.supabase.from("whatsapp_groups").upsert({
+        user_id: context.userId,
+        connection_id: data.id,
+        jid,
+        subject: String(g.subject ?? g.name ?? "Grupo"),
+        description: g.desc ?? g.description ?? null,
+        participants_count: Array.isArray(g.participants) ? g.participants.length : (g.size ?? 0),
+        owner: g.owner ?? null,
+        picture_url: g.pictureUrl ?? null,
+        metadata: {},
+      }, { onConflict: "connection_id,jid" });
+      if (!error) groupsUpserted++;
+    }
+
+    await context.supabase.from("connections")
+      .update({ last_sync_at: new Date().toISOString() })
+      .eq("id", data.id).eq("user_id", context.userId);
+
+    await context.supabase.from("audit_logs").insert({
+      user_id: context.userId, action: "sync", entity: "connection", entity_id: data.id,
+      metadata: { contactsUpserted, conversationsUpserted, groupsUpserted },
+    });
+
+    return { contactsUpserted, conversationsUpserted, groupsUpserted };
+  });
+
+export const listWhatsappGroups = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ connectionId: z.string().uuid() }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { data: rows, error } = await context.supabase
+      .from("whatsapp_groups").select("*")
+      .eq("user_id", context.userId)
+      .eq("connection_id", data.connectionId)
+      .order("subject", { ascending: true });
+    if (error) throw new Error(error.message);
+    return rows ?? [];
+  });
+
+export const toggleGroupMonitored = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ id: z.string().uuid(), monitored: z.boolean() }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { error } = await context.supabase.from("whatsapp_groups")
+      .update({ monitored: data.monitored })
+      .eq("id", data.id).eq("user_id", context.userId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
