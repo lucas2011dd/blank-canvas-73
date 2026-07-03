@@ -309,30 +309,16 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       if (phone) byPhone[phone] = item;
     }
 
-    // Só consulta a lista completa do grupo quando a Evolution não retornou
-    // status por telefone. Fazer `findGroupInfos` após todo add força cache de
-    // grupo e aumenta a chance de travar/derrubar a sessão durante migrações.
-    let joinedSet = new Set<string>();
-    const needsMembershipVerification = list.length === 0 || batch.some((t: any) => {
-      const expectedPhone = sendPhoneFor(t.phone);
-      return !byPhone[t.phone] && !byPhone[expectedPhone];
-    });
-    if (needsMembershipVerification) {
-      try {
-        const parts = await evolution.groupParticipants(instance, mig.target_group_jid);
-        joinedSet = new Set(parts.map((p: any) => {
-          return participantPhone(p);
-        }).filter(Boolean));
-      } catch { /* fallback: usa apenas o retorno da chamada */ }
-    }
-
+    // NÃO chamar groupParticipants() após addGroupParticipants — a segunda
+    // chamada sobrecarrega o WebSocket da Evolution e derruba a sessão
+    // (device_removed / 401). Usar apenas o retorno do próprio add.
     for (const t of batch) {
       const expectedPhone = sendPhoneFor(t.phone);
-      const it = byPhone[t.phone];
-      const resolvedIt = byPhone[expectedPhone] ?? it;
-      const rawStatus = String(resolvedIt?.status ?? "");
-      const apiSuccess = rawStatus === "success" || rawStatus === "200" || (resolvedIt && !resolvedIt?.message);
-      const joined = joinedSet.size ? joinedSet.has(expectedPhone) : apiSuccess;
+      const resolvedIt = byPhone[expectedPhone] ?? byPhone[t.phone];
+      const rawStatus = String(resolvedIt?.status ?? resolvedIt?.result ?? "");
+      const apiSuccess = rawStatus === "success" || rawStatus === "200" || resolvedIt?.success === true || (resolvedIt && !resolvedIt?.message && rawStatus === "");
+      const joined = apiSuccess;
+
 
       if (joined) {
         await supabase.from("group_migration_targets").update({
