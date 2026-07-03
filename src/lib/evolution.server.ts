@@ -107,15 +107,26 @@ function env() {
 
 function urlCandidates(base: string, path: string) {
   const primary = `${base}${path}`;
+  const candidates: string[] = [];
+  const add = (url: string) => {
+    if (!candidates.includes(url)) candidates.push(url);
+  };
   try {
     const url = new URL(primary);
     const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname);
-    if (url.protocol === "https:" && isIp) {
-      url.protocol = "http:";
-      return [url.toString(), primary];
+    if (isIp) {
+      const alias = new URL(url.toString());
+      alias.protocol = "http:";
+      alias.hostname = `${url.hostname.replace(/\./g, "-")}.sslip.io`;
+      add(alias.toString());
+
+      const plainIp = new URL(url.toString());
+      plainIp.protocol = "http:";
+      add(plainIp.toString());
     }
   } catch { /* mantém URL original */ }
-  return [primary];
+  add(primary);
+  return candidates;
 }
 
 async function call<T = any>(
