@@ -399,7 +399,7 @@ export function extractEvolutionConnectionState(source: unknown): string | undef
   );
 }
 
-function hasUsablePairing(source: unknown): boolean {
+function hasStoredPairing(source: unknown): boolean {
   const s: any = source;
   const owner = firstString(s?.ownerJid, s?.owner, s?.profileName, s?.number, s?.instance?.ownerJid, s?.instance?.profileName);
   const counts = s?._count ?? s?.count ?? {};
@@ -433,22 +433,30 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
   usable: boolean;
 }> {
   let state: string | undefined;
+  let statusFromState: EvolutionConnectionStatus = "offline";
   try {
     const rawState = await evolution.state(instanceName);
     state = extractEvolutionConnectionState(rawState);
-    const status = evolutionStateToStatus(state);
-    if (status === "online") return { status, state, usable: true };
+    statusFromState = evolutionStateToStatus(state);
+    if (statusFromState === "online") return { status: "online", state, usable: true };
+    if (statusFromState === "offline") return { status: "offline", state, usable: false };
   } catch {
     // cai para o probe abaixo: algumas instâncias respondem mal ao
     // connectionState, mas aceitam operações reais de chat/grupo.
   }
 
   const info = await evolution.instanceInfo(instanceName).catch(() => null);
-  if (hasUsablePairing(info)) {
-    return { status: "online", state: extractEvolutionConnectionState(info) ?? "paired_session", usable: true };
+  const infoState = extractEvolutionConnectionState(info);
+  const infoStatus = evolutionStateToStatus(infoState);
+  if (infoStatus === "online") return { status: "online", state: infoState, usable: true };
+  if (infoStatus === "offline") return { status: "offline", state: infoState, usable: false };
+
+  const storedPairing = hasStoredPairing(info);
+  if (!storedPairing && !state) {
+    return { status: "offline", state: infoState, usable: false };
   }
 
   const usable = await evolution.canReadSession(instanceName);
-  if (usable) return { status: "online", state: state ?? "usable_session", usable };
-  return { status: evolutionStateToStatus(state), state, usable };
+  if (usable) return { status: "online", state: state ?? infoState ?? "usable_session", usable };
+  return { status: statusFromState, state: state ?? infoState ?? (storedPairing ? "paired_inactive" : undefined), usable };
 }
