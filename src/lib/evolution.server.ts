@@ -625,7 +625,7 @@ export function isPairingLostEvolutionError(error: unknown): boolean {
     haystack.includes("nao esta conectada") ||
     haystack.includes("statuscode\":401") ||
     haystack.includes("status code\":401") ||
-    haystack.includes("status":401)
+    haystack.includes("status\":401")
   );
 }
 
