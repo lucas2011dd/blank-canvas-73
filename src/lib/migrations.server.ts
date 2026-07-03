@@ -221,10 +221,11 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
     }
   } catch (e: any) {
     if (isTransientEvolutionError(e)) {
+      await tryReconnect();
       await supabase.from("group_migrations").update({
         failed_count: effectiveFailedCount,
-        next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-        last_error: "Conexão caiu durante a adição — lote mantido pendente para tentar novamente",
+        next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
+        last_error: "Conexão caiu durante a adição — retry em 30s, lote mantido pendente",
       }).eq("id", mig.id);
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true };
     }
@@ -235,6 +236,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       failed++;
     }
   }
+
 
   const nextAt = new Date(Date.now() + jitter(mig.min_delay_seconds ?? 45, mig.max_delay_seconds ?? 120) * 1000).toISOString();
   const totalDone = (mig.added_count ?? 0) + added + effectiveFailedCount + failed + (mig.skipped_count ?? 0) + skipped;
