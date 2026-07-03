@@ -34,7 +34,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const { evolution } = await import("@/lib/evolution.server");
 
         const nowIso = new Date().toISOString();
-        const summary = { broadcasts: 0, scheduled: 0, errors: 0, webhooks: 0, webhookErrors: 0 };
+        const summary = { broadcasts: 0, scheduled: 0, errors: 0, webhooks: 0, webhookErrors: 0, reauthPaused: 0 };
 
         // -------- Drena fila de webhooks (arquitetura assíncrona) --------
         // O endpoint /webhook/$instance só enfileira em webhook_logs. Aqui
@@ -66,7 +66,8 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const activeMigrationConnectionIds = new Set(
           (activeMigrationConns ?? []).map((row: any) => row.connection_id).filter(Boolean),
         );
-        const { isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+        const { isPairingLostEvolutionError, isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+        const { markConnectionReauthRequired, REAUTH_REQUIRED_MESSAGE } = await import("@/lib/automation-safety.server");
         const { persistSessionSnapshot } = await import("@/lib/session-store.server");
         for (const conn of webhookConns ?? []) {
           // Durante migração ativa e conexão já online, não faça setWebhook,
@@ -79,7 +80,16 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           try {
             let resolved = await resolveEvolutionStatus(instance);
             // Auto-reconexão silenciosa (restart/reload — nunca /connect).
-            if (resolved.status !== "online" && conn.disconnected_manually !== true) {
+              if (resolved.status !== "online" && isPairingLostEvolutionError(resolved.state)) {
+                await markConnectionReauthRequired(supabaseAdmin, {
+                  connectionId: conn.id,
+                  instanceName: instance,
+                  reason: resolved.state ?? "device_removed",
+                });
+                summary.reauthPaused++;
+                continue;
+              }
+              if (resolved.status !== "online" && conn.disconnected_manually !== true) {
               const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
               if (recovered) resolved = recovered;
             }
@@ -146,7 +156,17 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(bc.connection_id).replace(/-/g, "")}`;
 
             if (conn.status !== "online") {
+              if ((conn.metadata as any)?.evolution_state === "reauth_required") continue;
               const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
+              if (isPairingLostEvolutionError(recovered?.state)) {
+                await markConnectionReauthRequired(supabaseAdmin, {
+                  connectionId: bc.connection_id,
+                  instanceName: instance,
+                  reason: recovered?.state ?? "device_removed",
+                });
+                summary.reauthPaused++;
+                continue;
+              }
               await supabaseAdmin.from("connections").update({
                 status: recovered?.status ?? "connecting",
                 ...(recovered?.status === "online" ? { qr_code: null } : {}),
@@ -193,6 +213,20 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               summary.broadcasts++;
               didWork = true;
             } catch (e: any) {
+              if (isPairingLostEvolutionError(e)) {
+                await supabaseAdmin.from("broadcast_targets").update({
+                  status: "pending",
+                  last_error: REAUTH_REQUIRED_MESSAGE,
+                }).eq("id", t.id);
+                await markConnectionReauthRequired(supabaseAdmin, {
+                  connectionId: bc.connection_id,
+                  instanceName: instance,
+                  reason: String(e?.message ?? "device_removed"),
+                });
+                summary.reauthPaused++;
+                didWork = true;
+                continue;
+              }
               if (isTransientEvolutionError(e)) {
                 const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
                 await supabaseAdmin.from("connections").update({
@@ -248,7 +282,17 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             if (!conn) continue;
             const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(row.connection_id).replace(/-/g, "")}`;
             if (conn.status !== "online") {
+              if ((conn.metadata as any)?.evolution_state === "reauth_required") continue;
               const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
+              if (isPairingLostEvolutionError(recovered?.state)) {
+                await markConnectionReauthRequired(supabaseAdmin, {
+                  connectionId: row.connection_id,
+                  instanceName: instance,
+                  reason: recovered?.state ?? "device_removed",
+                });
+                summary.reauthPaused++;
+                continue;
+              }
               await supabaseAdmin.from("connections").update({
                 status: recovered?.status ?? "connecting",
                 ...(recovered?.status === "online" ? { qr_code: null } : {}),
@@ -279,6 +323,21 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 });
               }
             } catch (e: any) {
+              if (isPairingLostEvolutionError(e)) {
+                await supabaseAdmin.from("scheduled_messages").update({
+                  status: "pending",
+                  last_error: REAUTH_REQUIRED_MESSAGE,
+                  attempts: (row.attempts ?? 0) + 1,
+                }).eq("id", row.id);
+                await markConnectionReauthRequired(supabaseAdmin, {
+                  connectionId: row.connection_id,
+                  instanceName: instance,
+                  reason: String(e?.message ?? "device_removed"),
+                });
+                summary.reauthPaused++;
+                didWork = true;
+                continue;
+              }
               if (isTransientEvolutionError(e)) {
                 const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
                 await supabaseAdmin.from("connections").update({
