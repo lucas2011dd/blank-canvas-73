@@ -181,7 +181,7 @@ function ChatPage() {
   );
 }
 
-function ConvPane({ id, connection }: { id: string; connection?: any }) {
+function ConvPane({ id, connection, onBack }: { id: string; connection?: any; onBack?: () => void }) {
   const qc = useQueryClient();
   const { data: msgs = [] } = useQuery({ queryKey: ["messages", id], queryFn: () => listMessages({ data: { conversationId: id } }) });
   const scrollRef = useRef<HTMLDivElement>(null);
