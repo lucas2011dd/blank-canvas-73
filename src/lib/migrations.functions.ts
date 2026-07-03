@@ -102,6 +102,9 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     skipSelf: z.boolean().default(true),
     shuffleOrder: z.boolean().default(true),
     maxParticipants: z.number().int().min(1).max(1024).optional(),
+    // Filtros geográficos BR (opcionais). Se ambos vazios: sem filtro.
+    filterStates: z.array(z.string().length(2)).optional().default([]),
+    filterDdds: z.array(z.string()).optional().default([]),
   }).parse(d))
   .handler(async ({ context, data }) => {
     if (data.mode === "new_group" && !data.targetSubject) throw new Error("Informe o nome do novo grupo");
