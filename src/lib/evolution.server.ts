@@ -135,6 +135,21 @@ function webhookConfig(url: string, key: string) {
   };
 }
 
+function stableSettings() {
+  return {
+    rejectCall: false,
+    msgCall: "",
+    groupsIgnore: false,
+    alwaysOnline: true,
+    readMessages: false,
+    readStatus: false,
+    // Full-history do Baileys costuma gerar cargas enormes logo após o QR e
+    // aumenta risco de timeout/queda. A sincronização do ConnectHub é feita
+    // por endpoints leves (contatos/chats/grupos) depois que a sessão abre.
+    syncFullHistory: false,
+  };
+}
+
 function urlCandidates(base: string, path: string) {
   const primary = `${base}${path}`;
   const candidates: string[] = [];
@@ -258,6 +273,7 @@ export const evolution = {
       instanceName,
       integration: "WHATSAPP-BAILEYS",
       qrcode: true,
+      ...stableSettings(),
     };
     if (webhookUrl) {
       body.webhook = webhookConfig(webhookUrl, key);
@@ -350,6 +366,21 @@ export const evolution = {
         webhook: webhookConfig(url, key),
       },
     }).catch(() => null);
+  },
+
+  async setSettings(instanceName: string) {
+    return call(`/settings/set/${encodeURIComponent(instanceName)}`, {
+      method: "POST",
+      body: stableSettings(),
+    }).catch(() => null);
+  },
+
+  async hardenInstance(instanceName: string, webhookUrl?: string | null) {
+    const [settings, webhook] = await Promise.all([
+      this.setSettings(instanceName),
+      webhookUrl ? this.setWebhook(instanceName, webhookUrl) : Promise.resolve(null),
+    ]);
+    return { settings, webhook };
   },
 
   async findContacts(instanceName: string): Promise<any[]> {
