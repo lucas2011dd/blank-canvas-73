@@ -105,12 +105,13 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     if (data.skipSelf && ownerPhone) exclude.add(ownerPhone);
 
     const filtered = parts.filter((p: any) => {
-      if (data.skipAdmins && (p.admin === "admin" || p.admin === "superadmin" || p.admin === true)) return false;
+      if (data.skipAdmins && isAdminParticipant(p)) return false;
       return true;
     });
+    const adminsSkipped = data.skipAdmins ? parts.filter(isAdminParticipant).length : 0;
     let allPhones = Array.from(new Set(
       filtered.map((p: any) => jidToPhone(String(p.id ?? p.jid ?? "")))
-        .filter((p) => p.length >= 8 && !exclude.has(p))
+        .filter((p) => p.length >= 8 && !exclude.has(p) && p !== ownerPhone)
     ));
     if (data.shuffleOrder) {
       for (let i = allPhones.length - 1; i > 0; i--) {
