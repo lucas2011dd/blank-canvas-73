@@ -128,9 +128,11 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       return true;
     });
 
+    const { phoneMatchesBrFilter } = await import("@/lib/br-ddd");
+    const geoFilter = { states: data.filterStates, ddds: data.filterDdds };
     let allPhones = Array.from(new Set(
       filtered.map((p: any) => participantPhone(p))
-        .filter((p) => p.length >= 8 && !exclude.has(p))
+        .filter((p) => p.length >= 8 && !exclude.has(p) && phoneMatchesBrFilter(p, geoFilter))
     ));
     if (data.shuffleOrder) {
       for (let i = allPhones.length - 1; i > 0; i--) {
@@ -141,7 +143,7 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     if (data.maxParticipants && allPhones.length > data.maxParticipants) {
       allPhones = allPhones.slice(0, data.maxParticipants);
     }
-    if (allPhones.length === 0) throw new Error("Nenhum participante válido no grupo de origem");
+    if (allPhones.length === 0) throw new Error("Nenhum participante válido após filtros (DDD/estado/exclusões)");
 
     // Subject de origem — melhor UX no histórico
     let sourceSubject: string | null = null;
