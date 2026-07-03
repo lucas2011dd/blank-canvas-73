@@ -376,11 +376,14 @@ function Page() {
                     <AlertDialogContent>
                       <AlertDialogHeader>
                         <AlertDialogTitle>Excluir conexão?</AlertDialogTitle>
-                        <AlertDialogDescription>Esta ação não pode ser desfeita.</AlertDialogDescription>
+                          <AlertDialogDescription>
+                            Esta ação apaga primeiro no ConnectHub. Se a Evolution estiver travada, use "Forçar só ConnectHub" para sumir da tela sem esperar o servidor WhatsApp.
+                          </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
                         <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => del.mutate({ data: { id: c.id } })}>Excluir</AlertDialogAction>
+                          <AlertDialogAction onClick={() => del.mutate({ data: { id: c.id, keepEvolution: true } })}>Forçar só ConnectHub</AlertDialogAction>
+                          <AlertDialogAction onClick={() => del.mutate({ data: { id: c.id } })}>Excluir tudo</AlertDialogAction>
                       </AlertDialogFooter>
                     </AlertDialogContent>
                   </AlertDialog>
