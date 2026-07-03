@@ -275,16 +275,22 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       if (phone) byPhone[phone] = item;
     }
 
-    // Verifica de fato quem entrou no grupo (evita reportar "adicionado" quando
-    // a Evolution devolve 200 mas o participante não caiu no grupo — bloqueado,
-    // não é WhatsApp, privacidade, etc.).
+    // Só consulta a lista completa do grupo quando a Evolution não retornou
+    // status por telefone. Fazer `findGroupInfos` após todo add força cache de
+    // grupo e aumenta a chance de travar/derrubar a sessão durante migrações.
     let joinedSet = new Set<string>();
-    try {
-      const parts = await evolution.groupParticipants(instance, mig.target_group_jid);
-      joinedSet = new Set(parts.map((p: any) => {
-        return participantPhone(p);
-      }).filter(Boolean));
-    } catch { /* fallback: usa apenas o retorno da chamada */ }
+    const needsMembershipVerification = list.length === 0 || batch.some((t: any) => {
+      const expectedPhone = sendPhoneFor(t.phone);
+      return !byPhone[t.phone] && !byPhone[expectedPhone];
+    });
+    if (needsMembershipVerification) {
+      try {
+        const parts = await evolution.groupParticipants(instance, mig.target_group_jid);
+        joinedSet = new Set(parts.map((p: any) => {
+          return participantPhone(p);
+        }).filter(Boolean));
+      } catch { /* fallback: usa apenas o retorno da chamada */ }
+    }
 
     for (const t of batch) {
       const expectedPhone = sendPhoneFor(t.phone);
