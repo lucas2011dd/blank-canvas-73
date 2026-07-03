@@ -70,17 +70,17 @@ async function getFreshWhatsappQr(
   extractQrImage: typeof import("@/lib/evolution.server").extractQrImage,
   instanceName: string,
 ) {
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const connected = await evolution.connect(instanceName).catch((e: any) => {
-      console.error("[connections] connect falhou:", e?.message);
-      return null;
-    });
-    const qr = await extractQrImage(connected);
-    if (qr) return qr;
-    await wait(900 + attempt * 700);
-  }
-  return null;
+  // Uma única chamada a /connect. O QR chega em seguida pelo webhook
+  // QRCODE_UPDATED e é escrito em connections.qr_code — o navegador do
+  // usuário reage via realtime. Isso evita floodar o console da VPS com
+  // várias regenerações de QR (Evolution loga cada QR gerado).
+  const connected = await evolution.connect(instanceName).catch((e: any) => {
+    console.error("[connections] connect falhou:", e?.message);
+    return null;
+  });
+  return await extractQrImage(connected);
 }
+
 
 export const listConnections = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])

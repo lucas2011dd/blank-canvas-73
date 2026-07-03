@@ -76,9 +76,26 @@ function Page() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [qr, setQr] = useState<string | null>(null);
+  const [awaitingQr, setAwaitingQr] = useState<Set<string>>(new Set());
   const [groupsFor, setGroupsFor] = useState<string | null>(null);
   const qrSrc = normalizeQrSrc(qr);
 
+  const markAwaiting = (id?: string | null) => {
+    if (!id) return;
+    setAwaitingQr((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  };
+  const clearAwaiting = (id: string) => {
+    setAwaitingQr((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
 
   const create = useMutation({
     mutationFn: useServerFn(createConnection),
@@ -86,7 +103,10 @@ function Page() {
       toast.success("Conexão criada");
       setOpen(false);
       if (row?.qr_code) setQr(row.qr_code);
-      else if (row?.provider === "whatsapp") toast.info("QR não gerado — clique em Reconectar");
+      else if (row?.provider === "whatsapp") {
+        markAwaiting(row?.id);
+        toast.info("Gerando QR Code… abriremos automaticamente quando estiver pronto.");
+      }
       qc.invalidateQueries({ queryKey: ["connections"] });
     },
     onError: (e) => toast.error(e.message),
@@ -100,7 +120,10 @@ function Page() {
     onSuccess: (row: any) => {
       if (row?.qr_code) setQr(row.qr_code);
       else if (row?.status === "online") toast.success("WhatsApp já está online.");
-      else toast.info("Reconexão silenciosa iniciada; mantive a instância atual sem recriar nem gerar QR automático.");
+      else {
+        markAwaiting(row?.id);
+        toast.info("Reconexão iniciada — o QR aparecerá aqui assim que a Evolution enviar.");
+      }
       qc.invalidateQueries({ queryKey: ["connections"] });
     },
     onError: (e) => toast.error(e.message),
@@ -119,6 +142,21 @@ function Page() {
   });
   const refresh = useServerFn(refreshConnectionStatus);
 
+  // Auto-abre o QR quando ele chega via webhook/realtime para uma conexão
+  // que o usuário acabou de pedir para (re)conectar. Assim o QR só existe
+  // no navegador de quem está usando — a VPS não precisa exibir nada extra.
+  useEffect(() => {
+    if (awaitingQr.size === 0) return;
+    for (const c of data as any[]) {
+      if (!awaitingQr.has(c.id)) continue;
+      if (c.status === "online") { clearAwaiting(c.id); continue; }
+      if (c.qr_code) {
+        setQr(c.qr_code);
+        clearAwaiting(c.id);
+        break;
+      }
+    }
+  }, [data, awaitingQr]);
 
   // Poll status real para conexões WhatsApp ativas/em pareamento; se o celular
   // remover o aparelho e o webhook atrasar, a tela corrige sozinha.
@@ -141,6 +179,7 @@ function Page() {
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [qc]);
+
 
 
   return (
