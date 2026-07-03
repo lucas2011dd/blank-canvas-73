@@ -57,6 +57,19 @@ function isLoggedOutEvolutionError(error: unknown): boolean {
   );
 }
 
+function needsManualQr(conn: any, state?: any): boolean {
+  const meta = conn?.metadata ?? {};
+  const reason = meta.status_reason ?? meta.disconnectionReasonCode ?? state?.instance?.statusReason ?? state?.statusReason;
+  const haystack = JSON.stringify({ meta, state }).toLowerCase();
+  return (
+    reason === 401 ||
+    String(reason) === "401" ||
+    haystack.includes("device_removed") ||
+    haystack.includes("logged out") ||
+    haystack.includes("logout")
+  );
+}
+
 async function requeueTransientFailures(supabase: any, migrationId: string) {
   const { data: failedRows } = await supabase.from("group_migration_targets")
     .select("id,error")
@@ -97,6 +110,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   const instance = conn.metadata?.evolution_instance ?? instanceNameFor(mig.connection_id);
 
   const tryReconnect = async () => {
+    if (needsManualQr(conn)) return;
     try { await evolution.connect(instance); } catch { /* noop */ }
   };
 
@@ -106,9 +120,9 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       if (state?.instance?.state === "open") {
         await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
       } else {
-        await tryReconnect();
+        const mustRescan = state?.instance?.state === "close" || isLoggedOutEvolutionError(state) || needsManualQr(conn, state);
+        if (!mustRescan) await tryReconnect();
         const requeued = await requeueTransientFailures(supabase, mig.id);
-        const mustRescan = state?.instance?.state === "close" || isLoggedOutEvolutionError(state);
         await supabase.from("connections").update({ status: state?.instance?.state === "connecting" ? "connecting" : "offline" }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
         await supabase.from("group_migrations").update({
           failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
@@ -134,13 +148,14 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   try {
     const state = await evolution.state(instance);
     if (state?.instance?.state !== "open") {
-      await tryReconnect();
+      const mustRescan = state?.instance?.state === "close" || needsManualQr(conn, state);
+      if (!mustRescan) await tryReconnect();
       const requeued = await requeueTransientFailures(supabase, mig.id);
       await supabase.from("connections").update({ status: "offline" }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
       await supabase.from("group_migrations").update({
         failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
         next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-        last_error: state?.instance?.state === "close"
+        last_error: mustRescan
           ? "WhatsApp desconectado/removido — escaneie o QR novamente; fila retoma em 30s"
           : "Conexão caiu na Evolution — tentando religar; fila retoma em 30s",
       }).eq("id", mig.id);
