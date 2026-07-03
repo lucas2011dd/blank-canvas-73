@@ -193,7 +193,7 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       status: allPhones.length === initialAdded.length ? "completed" : "running",
       started_at: new Date().toISOString(),
       finished_at: allPhones.length === initialAdded.length ? new Date().toISOString() : null,
-      next_attempt_at: new Date(Date.now() + jitter(data.minDelaySeconds, data.maxDelaySeconds) * 1000).toISOString(),
+      next_attempt_at: new Date().toISOString(),
     }).select("*").single();
     if (mErr) throw new Error(mErr.message);
 
