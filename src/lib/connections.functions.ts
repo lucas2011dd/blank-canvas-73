@@ -392,10 +392,27 @@ export const toggleGroupMonitored = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid(), monitored: z.boolean() }).parse(d))
   .handler(async ({ context, data }) => {
-    const { error } = await context.supabase.from("whatsapp_groups")
+    const { data: grp, error: gErr } = await context.supabase.from("whatsapp_groups")
       .update({ monitored: data.monitored })
-      .eq("id", data.id).eq("user_id", context.userId);
-    if (error) throw new Error(error.message);
+      .eq("id", data.id).eq("user_id", context.userId).select("connection_id,subject").single();
+    if (gErr) throw new Error(gErr.message);
+
+    // Cria (ou mantém) a conversa correspondente para aparecer no chat imediatamente.
+    if (data.monitored && grp) {
+      const title = `Grupo: ${grp.subject}`;
+      const { data: existing } = await context.supabase.from("conversations").select("id")
+        .eq("user_id", context.userId)
+        .eq("connection_id", grp.connection_id)
+        .eq("title", title).maybeSingle();
+      if (!existing) {
+        await context.supabase.from("conversations").insert({
+          user_id: context.userId,
+          connection_id: grp.connection_id,
+          title,
+          last_message_at: new Date().toISOString(),
+        });
+      }
+    }
     return { ok: true };
   });
 
