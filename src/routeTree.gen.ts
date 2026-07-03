@@ -28,7 +28,6 @@ import { Route as AuthenticatedAgendamentosRouteImport } from './routes/_authent
 import { Route as ApiGoogleCallbackRouteImport } from './routes/api/google/callback'
 import { Route as ApiGoogleAuthorizeRouteImport } from './routes/api/google/authorize'
 import { Route as ApiPublicWaTickRouteImport } from './routes/api/public/wa/tick'
-import { Route as ApiPublicWaDebugRouteImport } from './routes/api/public/wa/debug'
 import { Route as ApiPublicWaWebhookInstanceRouteImport } from './routes/api/public/wa/webhook.$instance'
 
 const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
@@ -129,11 +128,6 @@ const ApiPublicWaTickRoute = ApiPublicWaTickRouteImport.update({
   path: '/api/public/wa/tick',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiPublicWaDebugRoute = ApiPublicWaDebugRouteImport.update({
-  id: '/api/public/wa/debug',
-  path: '/api/public/wa/debug',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ApiPublicWaWebhookInstanceRoute =
   ApiPublicWaWebhookInstanceRouteImport.update({
     id: '/api/public/wa/webhook/$instance',
@@ -159,7 +153,6 @@ export interface FileRoutesByFullPath {
   '/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
-  '/api/public/wa/debug': typeof ApiPublicWaDebugRoute
   '/api/public/wa/tick': typeof ApiPublicWaTickRoute
   '/api/public/wa/webhook/$instance': typeof ApiPublicWaWebhookInstanceRoute
 }
@@ -181,7 +174,6 @@ export interface FileRoutesByTo {
   '/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
-  '/api/public/wa/debug': typeof ApiPublicWaDebugRoute
   '/api/public/wa/tick': typeof ApiPublicWaTickRoute
   '/api/public/wa/webhook/$instance': typeof ApiPublicWaWebhookInstanceRoute
 }
@@ -205,7 +197,6 @@ export interface FileRoutesById {
   '/_authenticated/usuarios': typeof AuthenticatedUsuariosRoute
   '/api/google/authorize': typeof ApiGoogleAuthorizeRoute
   '/api/google/callback': typeof ApiGoogleCallbackRoute
-  '/api/public/wa/debug': typeof ApiPublicWaDebugRoute
   '/api/public/wa/tick': typeof ApiPublicWaTickRoute
   '/api/public/wa/webhook/$instance': typeof ApiPublicWaWebhookInstanceRoute
 }
@@ -229,7 +220,6 @@ export interface FileRouteTypes {
     | '/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
-    | '/api/public/wa/debug'
     | '/api/public/wa/tick'
     | '/api/public/wa/webhook/$instance'
   fileRoutesByTo: FileRoutesByTo
@@ -251,7 +241,6 @@ export interface FileRouteTypes {
     | '/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
-    | '/api/public/wa/debug'
     | '/api/public/wa/tick'
     | '/api/public/wa/webhook/$instance'
   id:
@@ -274,7 +263,6 @@ export interface FileRouteTypes {
     | '/_authenticated/usuarios'
     | '/api/google/authorize'
     | '/api/google/callback'
-    | '/api/public/wa/debug'
     | '/api/public/wa/tick'
     | '/api/public/wa/webhook/$instance'
   fileRoutesById: FileRoutesById
@@ -287,7 +275,6 @@ export interface RootRouteChildren {
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
   ApiGoogleAuthorizeRoute: typeof ApiGoogleAuthorizeRoute
   ApiGoogleCallbackRoute: typeof ApiGoogleCallbackRoute
-  ApiPublicWaDebugRoute: typeof ApiPublicWaDebugRoute
   ApiPublicWaTickRoute: typeof ApiPublicWaTickRoute
   ApiPublicWaWebhookInstanceRoute: typeof ApiPublicWaWebhookInstanceRoute
 }
@@ -427,13 +414,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicWaTickRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/public/wa/debug': {
-      id: '/api/public/wa/debug'
-      path: '/api/public/wa/debug'
-      fullPath: '/api/public/wa/debug'
-      preLoaderRoute: typeof ApiPublicWaDebugRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/api/public/wa/webhook/$instance': {
       id: '/api/public/wa/webhook/$instance'
       path: '/api/public/wa/webhook/$instance'
@@ -483,7 +463,6 @@ const rootRouteChildren: RootRouteChildren = {
   SitemapDotxmlRoute: SitemapDotxmlRoute,
   ApiGoogleAuthorizeRoute: ApiGoogleAuthorizeRoute,
   ApiGoogleCallbackRoute: ApiGoogleCallbackRoute,
-  ApiPublicWaDebugRoute: ApiPublicWaDebugRoute,
   ApiPublicWaTickRoute: ApiPublicWaTickRoute,
   ApiPublicWaWebhookInstanceRoute: ApiPublicWaWebhookInstanceRoute,
 }
