@@ -44,7 +44,7 @@ export const createConnection = createServerFn({ method: "POST" })
 
     if (data.provider === "whatsapp") {
       try {
-        const { evolution } = await import("@/lib/evolution.server");
+        const { evolution, extractQrImage } = await import("@/lib/evolution.server");
         const name = instanceNameFor(row.id);
         evolutionInstance = name;
 
@@ -53,13 +53,13 @@ export const createConnection = createServerFn({ method: "POST" })
           console.error("[connections] createInstance falhou:", e?.message);
           return null;
         });
-        qrBase64 = created?.qrcode?.base64 ?? null;
+        qrBase64 = await extractQrImage(created);
 
         // 2) se não veio, força um /connect (Evolution regenera)
         if (!qrBase64) {
           try {
             const c = await evolution.connect(name);
-            qrBase64 = c.base64 ?? null;
+            qrBase64 = await extractQrImage(c);
           } catch (e: any) {
             console.error("[connections] connect falhou:", e?.message);
           }
@@ -69,15 +69,17 @@ export const createConnection = createServerFn({ method: "POST" })
         console.error("[connections] evolution setup falhou:", e?.message);
       }
 
-      const { data: updated } = await context.supabase.from("connections")
-        .update({
-          qr_code: qrBase64,
-          status,
-          metadata: evolutionInstance ? { evolution_instance: evolutionInstance } : {},
-          last_sync_at: new Date().toISOString(),
-        })
+      const patch = {
+        qr_code: qrBase64,
+        status,
+        metadata: evolutionInstance ? { evolution_instance: evolutionInstance } : {},
+        last_sync_at: new Date().toISOString(),
+      };
+      const { data: updated, error: updateError } = await context.supabase.from("connections")
+        .update(patch)
         .eq("id", row.id).select("*").single();
-      if (updated) Object.assign(row, updated);
+      if (updateError) console.error("[connections] update QR falhou:", updateError.message);
+      Object.assign(row, updated ?? patch);
     }
 
     await context.supabase.from("audit_logs").insert({
@@ -112,7 +114,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
     // garante que a instância existe (idempotente) e busca o QR
-    const { evolution, evolutionStateToStatus } = await import("@/lib/evolution.server");
+    const { evolution, evolutionStateToStatus, extractQrImage } = await import("@/lib/evolution.server");
     const name = instanceNameFor(data.id);
 
     // tenta criar (se já existir a Evolution retorna erro — ignoramos)
@@ -122,7 +124,7 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     let status: "online" | "offline" | "connecting" = "connecting";
     try {
       const connectRes = await evolution.connect(name);
-      qrBase64 = connectRes.base64 ?? null;
+      qrBase64 = await extractQrImage(connectRes);
     } catch (e: any) {
       // Se falhar em connect, tenta ler estado atual
       try {
@@ -131,16 +133,42 @@ export const reconnectConnection = createServerFn({ method: "POST" })
       } catch { /* ignore */ }
     }
 
+    // Instâncias antigas/presas às vezes não devolvem QR no /connect.
+    // Se não estiver online, recria a instância e pede um QR novo.
+    if (!qrBase64 && status !== "online") {
+      await evolution.logout(name).catch(() => null);
+      await evolution.remove(name).catch(() => null);
+      const recreated = await evolution.createInstance(name, webhookUrl(name)).catch(() => null);
+      qrBase64 = await extractQrImage(recreated);
+      if (!qrBase64) {
+        const connectRes = await evolution.connect(name).catch(() => null);
+        qrBase64 = await extractQrImage(connectRes);
+      }
+      status = qrBase64 ? "connecting" : "offline";
+    }
+
+    const patch = {
+      status,
+      qr_code: qrBase64,
+      last_sync_at: new Date().toISOString(),
+      metadata: { evolution_instance: name },
+    };
+
     const { data: row, error } = await context.supabase
       .from("connections")
-      .update({
-        status,
-        qr_code: qrBase64,
-        last_sync_at: new Date().toISOString(),
-        metadata: { evolution_instance: name },
-      })
+      .update(patch)
       .eq("id", data.id).eq("user_id", context.userId).select("*").single();
-    if (error) throw new Error(error.message);
+    if (error) {
+      console.error("[connections] reconnect update falhou:", error.message);
+      const { data: existing } = await context.supabase
+        .from("connections")
+        .select("*")
+        .eq("id", data.id)
+        .eq("user_id", context.userId)
+        .single();
+      if (!existing) throw new Error(error.message);
+      return { ...existing, ...patch };
+    }
     return row;
   });
 

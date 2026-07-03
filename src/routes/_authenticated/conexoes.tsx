@@ -49,7 +49,11 @@ function Page() {
   });
   const reconnect = useMutation({
     mutationFn: useServerFn(reconnectConnection),
-    onSuccess: (row: any) => { setQr(row.qr_code); qc.invalidateQueries({ queryKey: ["connections"] }); },
+    onSuccess: (row: any) => {
+      if (row?.qr_code) setQr(row.qr_code);
+      else toast.error("QR não retornou. Verifique se a instância está offline e tente Desconectar → Reconectar.");
+      qc.invalidateQueries({ queryKey: ["connections"] });
+    },
     onError: (e) => toast.error(e.message),
   });
   const disc = useMutation({

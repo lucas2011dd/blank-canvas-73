@@ -1,5 +1,6 @@
 // Cliente HTTP mínimo para a Evolution API v2.
 // Só é importado dentro de handlers de server functions / server routes.
+import QRCode from "qrcode";
 
 function env() {
   const base = process.env.EVOLUTION_API_URL;
@@ -31,11 +32,46 @@ async function call<T = any>(
   return json as T;
 }
 
+function pickString(source: unknown, paths: string[][]): string | null {
+  for (const path of paths) {
+    let current: any = source;
+    for (const key of path) current = current?.[key];
+    if (typeof current === "string" && current.trim()) return current.trim();
+  }
+  return null;
+}
+
+export async function extractQrImage(source: unknown): Promise<string | null> {
+  const base64 = pickString(source, [
+    ["base64"],
+    ["qrcode", "base64"],
+    ["qr", "base64"],
+    ["data", "base64"],
+    ["data", "qrcode", "base64"],
+  ]);
+  if (base64) return base64.startsWith("data:") ? base64 : `data:image/png;base64,${base64}`;
+
+  const code = pickString(source, [
+    ["code"],
+    ["qrcode", "code"],
+    ["qr", "code"],
+    ["data", "code"],
+    ["data", "qrcode", "code"],
+  ]);
+  if (!code) return null;
+
+  return QRCode.toDataURL(code, {
+    errorCorrectionLevel: "M",
+    margin: 2,
+    width: 360,
+  });
+}
+
 export const evolution = {
   async createInstance(
     instanceName: string,
     webhookUrl?: string,
-  ): Promise<{ qrcode?: { base64?: string; code?: string; pairingCode?: string | null } }> {
+  ): Promise<any> {
     const body: any = {
       instanceName,
       integration: "WHATSAPP-BAILEYS",
@@ -54,7 +90,7 @@ export const evolution = {
 
   async connect(
     instanceName: string,
-  ): Promise<{ base64?: string; code?: string; pairingCode?: string | null }> {
+  ): Promise<any> {
     return call(`/instance/connect/${encodeURIComponent(instanceName)}`);
   },
 
