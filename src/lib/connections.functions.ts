@@ -353,9 +353,10 @@ export const disconnectConnection = createServerFn({ method: "POST" })
       const { evolution } = await import("@/lib/evolution.server");
       await evolution.logout(instanceNameFor(data.id)).catch(() => null);
     } catch { /* ignore */ }
-    const { error } = await context.supabase.from("connections")
-      .update({ status: "offline", qr_code: null }).eq("id", data.id).eq("user_id", context.userId);
-    if (error) throw new Error(error.message);
+    // Marca como desconexão manual — a partir daqui os loops automáticos NÃO
+    // devem tentar reconectar essa instância até o usuário clicar em Conectar.
+    const { markManualDisconnect } = await import("@/lib/session-store.server");
+    await markManualDisconnect(context.supabase, data.id);
     return { ok: true };
   });
 
