@@ -109,7 +109,16 @@ function Page() {
     mutationFn: useServerFn(disconnectConnection),
     onSuccess: () => { toast.success("Desconectada"); qc.invalidateQueries({ queryKey: ["connections"] }); },
   });
+  const sync = useMutation({
+    mutationFn: useServerFn(syncWhatsappConnection),
+    onSuccess: (r: any) => {
+      toast.success(`Sync: ${r.contactsUpserted} contatos, ${r.conversationsUpserted} conversas, ${r.groupsUpserted} grupos`);
+      qc.invalidateQueries();
+    },
+    onError: (e) => toast.error(e.message),
+  });
   const refresh = useServerFn(refreshConnectionStatus);
+
 
   // Poll status a cada 5s para conexões em connecting
   useEffect(() => {
