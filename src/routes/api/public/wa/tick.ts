@@ -51,15 +51,15 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           .eq("provider", "whatsapp")
           .in("status", ["online", "connecting"])
           .limit(20);
-        const { evolutionStateToStatus } = await import("@/lib/evolution.server");
+        const { resolveEvolutionStatus } = await import("@/lib/evolution.server");
         for (const conn of webhookConns ?? []) {
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
           const wh = webhookUrl(instance);
           if (wh) await evolution.setWebhook(instance, wh).catch(() => null);
           try {
-            const s = await evolution.state(instance);
-            const evState = s?.instance?.state;
-            const realStatus = evolutionStateToStatus(evState);
+            const resolved = await resolveEvolutionStatus(instance);
+            const evState = resolved.state;
+            const realStatus = resolved.status;
             if (realStatus !== conn.status) {
               await supabaseAdmin.from("connections").update({
                 status: realStatus,
