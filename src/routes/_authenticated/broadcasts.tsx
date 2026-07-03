@@ -181,6 +181,7 @@ function NewBroadcastDialog({ connections, contacts, onSubmit, pending }: any) {
             <Label>Telefones avulsos (vírgula ou linha, com DDI)</Label>
             <Textarea name="phones" rows={2} placeholder="5511999999999, 5511888888888" />
           </div>
+          <BrGeoFilter states={filterStates} setStates={setFilterStates} ddds={filterDdds} setDdds={setFilterDdds} />
           <div>
             <div className="flex items-center justify-between mb-2">
               <Label>Contatos ({selected.size} selecionados)</Label>
