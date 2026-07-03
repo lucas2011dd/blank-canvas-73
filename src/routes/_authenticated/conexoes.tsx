@@ -197,7 +197,7 @@ function Page() {
                   Criada em {new Date(c.created_at).toLocaleDateString("pt-BR")}
                   {c.last_sync_at && ` · Última sync: ${new Date(c.last_sync_at).toLocaleTimeString("pt-BR")}`}
                 </p>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button size="sm" variant="outline" onClick={() => reconnect.mutate({ data: { id: c.id } })}>
                     <RefreshCw className="mr-1 h-3 w-3" /> Reconectar
                   </Button>
