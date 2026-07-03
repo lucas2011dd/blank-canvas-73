@@ -128,6 +128,11 @@ function Page() {
                   <Button size="sm" variant="outline" onClick={() => reconnect.mutate({ data: { id: c.id } })}>
                     <RefreshCw className="mr-1 h-3 w-3" /> Reconectar
                   </Button>
+                  {c.qr_code && c.status !== "online" && (
+                    <Button size="sm" variant="outline" onClick={() => setQr(c.qr_code)}>
+                      <QrCode className="mr-1 h-3 w-3" /> QR
+                    </Button>
+                  )}
                   {c.status !== "offline" && (
                     <Button size="sm" variant="outline" onClick={() => disc.mutate({ data: { id: c.id } })}>
                       Desconectar
