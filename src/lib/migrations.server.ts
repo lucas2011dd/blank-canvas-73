@@ -75,9 +75,10 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   try {
     const sourceParticipants = await evolution.groupParticipants(instance, mig.source_group_jid);
     for (const p of sourceParticipants) {
+      const participant: any = p;
       const realPhone = participantPhone(p);
       if (!realPhone) continue;
-      for (const candidate of [p?.id, p?.jid, p?.phoneNumber, p?.phone_number, p?.number]) {
+      for (const candidate of [participant?.id, participant?.jid, participant?.phoneNumber, participant?.phone_number, participant?.number]) {
         const key = digits(candidate);
         if (key) phoneByOriginal.set(key, realPhone);
       }
