@@ -237,7 +237,7 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
           </div>
         )}
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <div>
             <Label className="text-xs">Batch</Label>
             <Input type="number" min={1} max={10} value={batchSize} onChange={(e) => setBatchSize(Math.max(1, Math.min(10, Number(e.target.value) || 3)))} />
