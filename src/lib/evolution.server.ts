@@ -105,27 +105,48 @@ function env() {
   return { base: base.replace(/\/$/, ""), key };
 }
 
+function urlCandidates(base: string, path: string) {
+  const primary = `${base}${path}`;
+  try {
+    const url = new URL(primary);
+    const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname);
+    if (url.protocol === "https:" && isIp) {
+      url.protocol = "http:";
+      return [url.toString(), primary];
+    }
+  } catch { /* mantém URL original */ }
+  return [primary];
+}
+
 async function call<T = any>(
   path: string,
   init: { method?: string; body?: unknown } = {},
 ): Promise<T> {
   const { base, key } = env();
-  const res = await fetch(`${base}${path}`, {
-    method: init.method ?? "GET",
-    headers: {
-      apikey: key,
-      "Content-Type": "application/json",
-    },
-    body: init.body ? JSON.stringify(init.body) : undefined,
-  });
-  const text = await res.text();
-  let json: any = null;
-  try { json = text ? JSON.parse(text) : null; } catch { /* pass */ }
-  if (!res.ok) {
+  let lastError: Error | null = null;
+
+  for (const url of urlCandidates(base, path)) {
+    const res = await fetch(url, {
+      method: init.method ?? "GET",
+      headers: {
+        apikey: key,
+        "Content-Type": "application/json",
+      },
+      body: init.body ? JSON.stringify(init.body) : undefined,
+    });
+    const text = await res.text();
+    let json: any = null;
+    try { json = text ? JSON.parse(text) : null; } catch { /* pass */ }
+    if (res.ok) return json as T;
+
     const msg = json?.response?.message?.[0] ?? json?.message ?? text ?? `HTTP ${res.status}`;
-    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    lastError = new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    if (!/error code:\s*1003/i.test(lastError.message)) {
+      throw lastError;
+    }
   }
-  return json as T;
+
+  throw lastError ?? new Error("Falha ao chamar Evolution API");
 }
 
 function pickString(source: unknown, paths: string[][]): string | null {
