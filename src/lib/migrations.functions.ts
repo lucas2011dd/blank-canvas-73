@@ -94,9 +94,9 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     targetGroupJid: z.string().optional(),
     targetSubject: z.string().trim().max(120).optional(),
     targetDescription: z.string().trim().max(500).optional(),
-    batchSize: z.number().int().min(1).max(10).default(3),
-    minDelaySeconds: z.number().int().min(15).max(600).default(45),
-    maxDelaySeconds: z.number().int().min(30).max(1800).default(120),
+    batchSize: z.number().int().min(1).max(10).default(1),
+    minDelaySeconds: z.number().int().min(20).max(600).default(60),
+    maxDelaySeconds: z.number().int().min(30).max(1800).default(140),
     excludePhones: z.array(z.string()).default([]),
     skipAdmins: z.boolean().default(true),
     skipSelf: z.boolean().default(true),
@@ -158,7 +158,10 @@ export const startGroupMigration = createServerFn({ method: "POST" })
 
     if (data.mode === "new_group") {
       // Cria com o primeiro batch — Evolution exige participantes na criação.
-      const seed = allPhones.slice(0, data.batchSize);
+      // Criar/adicionar muitos membros no mesmo pacote é o padrão que mais
+      // derruba Baileys/WhatsApp. Mesmo que a UI permita configurar lote,
+      // a criação usa apenas 1 seed para preservar a sessão.
+      const seed = allPhones.slice(0, 1);
       const created = await evolution.createGroup(instance, data.targetSubject!, seed, data.targetDescription);
       targetGroupJid = created?.groupJid ?? created?.id ?? created?.group?.id ?? created?.data?.groupJid ?? created?.data?.id ?? created?.data?.group?.id ?? null;
       targetSubject = data.targetSubject!;
