@@ -11,6 +11,8 @@ import {
   Sparkles,
   LogOut,
   ShieldCheck,
+  Megaphone,
+  CalendarClock,
 } from "lucide-react";
 import {
   Sidebar,
@@ -34,6 +36,8 @@ const main = [
   { title: "Conexões", url: "/conexoes", icon: Cable },
   { title: "Chat", url: "/chat", icon: MessageSquare },
   { title: "Contatos", url: "/contatos", icon: Users },
+  { title: "Disparos", url: "/broadcasts", icon: Megaphone },
+  { title: "Agendamentos", url: "/agendamentos", icon: CalendarClock },
   { title: "Ferramentas", url: "/ferramentas", icon: Wrench },
 ];
 const system = [
