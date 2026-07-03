@@ -16,6 +16,7 @@ import { listBroadcasts, createBroadcast, controlBroadcast, runBroadcastTick } f
 import { listConnections } from "@/lib/connections.functions";
 import { listContacts } from "@/lib/contacts.functions";
 import { toast } from "sonner";
+import { BrGeoFilter } from "@/components/br-geo-filter";
 
 const bcQ = queryOptions({ queryKey: ["broadcasts"], queryFn: () => listBroadcasts() });
 const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
@@ -130,6 +131,8 @@ function BroadcastsPage() {
 function NewBroadcastDialog({ connections, contacts, onSubmit, pending }: any) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
+  const [filterStates, setFilterStates] = useState<string[]>([]);
+  const [filterDdds, setFilterDdds] = useState<string[]>([]);
   const filtered = useMemo(() => contacts.filter((c: any) => !query || (c.name ?? "").toLowerCase().includes(query.toLowerCase()) || (c.phone ?? "").includes(query)), [contacts, query]);
 
   return (
@@ -147,6 +150,7 @@ function NewBroadcastDialog({ connections, contacts, onSubmit, pending }: any) {
           scheduledAt: fd.get("scheduledAt") ? new Date(String(fd.get("scheduledAt"))).toISOString() : null,
           contactIds: Array.from(selected),
           phones: phonesRaw,
+          filterStates, filterDdds,
         };
         if (!payload.connectionId) return toast.error("Escolha a conexão");
         if (!payload.contactIds.length && !payload.phones.length) return toast.error("Selecione contatos ou informe telefones");
