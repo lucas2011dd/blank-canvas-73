@@ -32,7 +32,10 @@ async function call<T = any>(
 }
 
 export const evolution = {
-  async createInstance(instanceName: string, webhookUrl?: string) {
+  async createInstance(
+    instanceName: string,
+    webhookUrl?: string,
+  ): Promise<{ qrcode?: { base64?: string; code?: string; pairingCode?: string | null } }> {
     const body: any = {
       instanceName,
       integration: "WHATSAPP-BAILEYS",
@@ -49,7 +52,9 @@ export const evolution = {
     return call("/instance/create", { method: "POST", body });
   },
 
-  async connect(instanceName: string): Promise<{ base64?: string; code?: string; pairingCode?: string | null }> {
+  async connect(
+    instanceName: string,
+  ): Promise<{ base64?: string; code?: string; pairingCode?: string | null }> {
     return call(`/instance/connect/${encodeURIComponent(instanceName)}`);
   },
 
