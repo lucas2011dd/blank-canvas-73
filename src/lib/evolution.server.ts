@@ -288,8 +288,21 @@ export const evolution = {
     return Array.isArray(res) ? res : (res?.instances ?? res?.data ?? []);
   },
 
+  async fetchInstancesStrict(): Promise<any[]> {
+    const res = await call<any>("/instance/fetchInstances");
+    return Array.isArray(res) ? res : (res?.instances ?? res?.data ?? []);
+  },
+
   async instanceInfo(instanceName: string): Promise<any | null> {
     const list = await this.fetchInstances();
+    return list.find((row: any) => {
+      const name = row?.name ?? row?.instanceName ?? row?.instance?.instanceName ?? row?.instance?.name;
+      return name === instanceName;
+    }) ?? null;
+  },
+
+  async instanceInfoStrict(instanceName: string): Promise<any | null> {
+    const list = await this.fetchInstancesStrict();
     return list.find((row: any) => {
       const name = row?.name ?? row?.instanceName ?? row?.instance?.instanceName ?? row?.instance?.name;
       return name === instanceName;
@@ -404,7 +417,27 @@ export function evolutionStateToStatus(state?: string): EvolutionConnectionStatu
   if (!normalized) return "offline";
   if (["open", "online", "connected", "authenticated", "ready"].includes(normalized)) return "online";
   if (
-    ["close", "closed", "offline", "disconnected", "logout", "logged_out", "device_removed"].includes(normalized) ||
+    [
+      "close",
+      "closed",
+      "offline",
+      "disconnected",
+      "logout",
+      "logged_out",
+      "device_removed",
+      "not_connected",
+      "not connected",
+      "not-connect",
+      "notconnect",
+      "unpaired",
+      "unauthorized",
+    ].includes(normalized) ||
+    normalized.includes("not_connected") ||
+    normalized.includes("not connected") ||
+    normalized.includes("unauthoriz") ||
+    normalized.includes("forbidden") ||
+    normalized.includes("401") ||
+    normalized.includes("fail") ||
     normalized.includes("logged") ||
     normalized.includes("removed") ||
     normalized.includes("disconnect") ||
@@ -425,18 +458,27 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
   usable: boolean;
 }> {
   let state: string | undefined;
+  let stateError: unknown = null;
   let statusFromState: EvolutionConnectionStatus = "offline";
   try {
     const rawState = await evolution.state(instanceName);
     state = extractEvolutionConnectionState(rawState);
     statusFromState = evolutionStateToStatus(state);
     if (statusFromState === "online") return { status: "online", state, usable: true };
-  } catch {
-    // cai para fetchInstances apenas para descobrir estado/QR; dados antigos
-    // de sessão/contatos NÃO significam que o WhatsApp está online agora.
+  } catch (error) {
+    stateError = error;
+    // Cai para fetchInstances apenas para descobrir estado/QR. Se também não
+    // conseguirmos falar com a Evolution, a chamada deve falhar em vez de
+    // marcar offline por engano e induzir reescaneamento de QR.
   }
 
-  const info = await evolution.instanceInfo(instanceName).catch(() => null);
+  let infoLookupFailed = false;
+  const info = await evolution.instanceInfoStrict(instanceName).catch(() => {
+    infoLookupFailed = true;
+    return undefined;
+  });
+  if (infoLookupFailed && stateError) throw stateError;
+  if (info === undefined) return { status: statusFromState, state: state ?? statusFromState, usable: false };
   const infoState = extractEvolutionConnectionState(info);
   const infoStatus = evolutionStateToStatus(infoState);
   if (infoStatus === "online") return { status: "online", state: infoState, usable: true };
