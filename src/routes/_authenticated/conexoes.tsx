@@ -44,11 +44,24 @@ function Page() {
   const reconnect = useMutation({
     mutationFn: useServerFn(reconnectConnection),
     onSuccess: (row: any) => { setQr(row.qr_code); qc.invalidateQueries({ queryKey: ["connections"] }); },
+    onError: (e) => toast.error(e.message),
   });
   const disc = useMutation({
     mutationFn: useServerFn(disconnectConnection),
     onSuccess: () => { toast.success("Desconectada"); qc.invalidateQueries({ queryKey: ["connections"] }); },
   });
+  const refresh = useServerFn(refreshConnectionStatus);
+
+  // Poll status a cada 5s para conexões em connecting
+  useEffect(() => {
+    const connecting = data.filter((c: any) => c.status === "connecting");
+    if (connecting.length === 0) return;
+    const t = setInterval(async () => {
+      await Promise.all(connecting.map((c: any) => refresh({ data: { id: c.id } }).catch(() => null)));
+      qc.invalidateQueries({ queryKey: ["connections"] });
+    }, 5000);
+    return () => clearInterval(t);
+  }, [data, qc, refresh]);
 
   return (
     <div className="space-y-6">
