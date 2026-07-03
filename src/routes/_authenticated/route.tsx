@@ -1,4 +1,6 @@
-import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
+import { createFileRoute, Outlet, redirect, useNavigate } from "@tanstack/react-router";
+import { useEffect } from "react";
+import { toast } from "sonner";
 import { SidebarProvider, SidebarTrigger, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -17,6 +19,28 @@ export const Route = createFileRoute("/_authenticated")({
 });
 
 function Layout() {
+  const navigate = useNavigate();
+
+  // Notificação global de novas mensagens recebidas
+  useEffect(() => {
+    const channel = supabase.channel("global-inbox")
+      .on("postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages", filter: "direction=eq.inbound" },
+        (payload: any) => {
+          const msg = payload.new;
+          if (!msg) return;
+          const preview = String(msg.body ?? "").slice(0, 80);
+          toast.message("Nova mensagem", {
+            description: preview || "(sem conteúdo)",
+            action: msg.conversation_id
+              ? { label: "Abrir", onClick: () => navigate({ to: "/chat", search: { conv: msg.conversation_id } }) }
+              : undefined,
+          });
+        })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [navigate]);
+
   return (
     <SidebarProvider>
       <div className="min-h-screen flex w-full">

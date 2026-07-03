@@ -1,8 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
-import { Plus, Search, Trash2, Download } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Plus, Search, Trash2, Download, MessageCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,13 +10,19 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 import { createContact, deleteContact, listContacts } from "@/lib/contacts.functions";
+import { listConnections } from "@/lib/connections.functions";
 
 const q = queryOptions({ queryKey: ["contacts"], queryFn: () => listContacts({ data: {} }) });
+const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
 
 export const Route = createFileRoute("/_authenticated/contatos")({
   head: () => ({ meta: [{ title: "Contatos — ConnectHub" }] }),
-  loader: ({ context }) => context.queryClient.ensureQueryData(q),
+  loader: ({ context }) => Promise.all([
+    context.queryClient.ensureQueryData(q),
+    context.queryClient.ensureQueryData(connQ),
+  ]),
   component: Page,
   errorComponent: ({ error }) => <div className="text-destructive">Erro: {error.message}</div>,
   notFoundComponent: () => <div>Não encontrado</div>,
@@ -24,9 +30,30 @@ export const Route = createFileRoute("/_authenticated/contatos")({
 
 function Page() {
   const { data } = useSuspenseQuery(q);
+  const { data: connections } = useSuspenseQuery(connQ);
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
+
+  const whatsapps = connections.filter((c: any) => c.provider === "whatsapp");
+
+  useEffect(() => {
+    const channel = supabase.channel("contacts-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, () => {
+        qc.invalidateQueries({ queryKey: ["contacts"] });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc]);
+
+  function openWhatsapp(phone: string) {
+    const clean = phone.replace(/\D/g, "");
+    if (!clean) return toast.error("Contato sem telefone");
+    const online = whatsapps.find((c: any) => c.status === "online") ?? whatsapps[0];
+    if (!online) return toast.error("Nenhuma conexão WhatsApp configurada");
+    navigate({ to: "/chat", search: { phone: clean, connectionId: online.id } });
+  }
 
   const create = useMutation({
     mutationFn: useServerFn(createContact),
@@ -115,7 +142,18 @@ function Page() {
                   <TableCell className="text-muted-foreground">{c.phone || "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{c.email || "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{c.company || "—"}</TableCell>
-                  <TableCell><Button size="icon" variant="ghost" onClick={() => del.mutate({ data: { id: c.id } })}><Trash2 className="h-4 w-4 text-destructive" /></Button></TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      {c.phone && (
+                        <Button size="icon" variant="ghost" title="Enviar WhatsApp" onClick={() => openWhatsapp(c.phone!)}>
+                          <MessageCircle className="h-4 w-4 text-primary" />
+                        </Button>
+                      )}
+                      <Button size="icon" variant="ghost" onClick={() => del.mutate({ data: { id: c.id } })}>
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

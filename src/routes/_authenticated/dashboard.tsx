@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
-import { Suspense } from "react";
+import { queryOptions, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { Suspense, useEffect } from "react";
 import { Cable, MessageSquare, Users, Activity, ArrowUpRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { supabase } from "@/integrations/supabase/client";
 import { getDashboardStats } from "@/lib/dashboard.functions";
 
 const statsQuery = queryOptions({
@@ -22,6 +23,17 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 });
 
 function Dashboard() {
+  const qc = useQueryClient();
+  useEffect(() => {
+    const invalidate = () => qc.invalidateQueries({ queryKey: ["dashboard-stats"] });
+    const channel = supabase.channel("dashboard-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "connections" }, invalidate)
+      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, invalidate)
+      .on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, invalidate)
+      .on("postgres_changes", { event: "*", schema: "public", table: "audit_logs" }, invalidate)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc]);
   return (
     <div className="space-y-6">
       <div>
@@ -32,6 +44,7 @@ function Dashboard() {
     </div>
   );
 }
+
 
 function StatsGrid() {
   const { data } = useSuspenseQuery(statsQuery);
