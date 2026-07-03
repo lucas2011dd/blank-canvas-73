@@ -65,10 +65,41 @@ export const sendMessage = createServerFn({ method: "POST" })
 
 export const createConversation = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ title: z.string().trim().min(1).max(200) }).parse(d))
+  .inputValidator((d: unknown) => z.object({
+    title: z.string().trim().min(1).max(200),
+    connectionId: z.string().uuid().optional().nullable(),
+    phone: z.string().trim().max(30).optional().nullable(),
+  }).parse(d))
   .handler(async ({ context, data }) => {
+    const phone = data.phone ? data.phone.replace(/\D/g, "") : null;
+    const title = phone || data.title;
+
+    if (data.connectionId && phone) {
+      const { data: existing } = await context.supabase
+        .from("conversations").select("*")
+        .eq("user_id", context.userId)
+        .eq("connection_id", data.connectionId)
+        .eq("title", phone).maybeSingle();
+      if (existing) return existing;
+    }
+
     const { data: row, error } = await context.supabase.from("conversations")
-      .insert({ user_id: context.userId, title: data.title }).select("*").single();
+      .insert({
+        user_id: context.userId,
+        title,
+        connection_id: data.connectionId ?? null,
+      }).select("*").single();
     if (error) throw new Error(error.message);
     return row;
+  });
+
+export const deleteConversation = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .handler(async ({ context, data }) => {
+    await context.supabase.from("messages").delete().eq("conversation_id", data.id).eq("user_id", context.userId);
+    const { error } = await context.supabase.from("conversations").delete()
+      .eq("id", data.id).eq("user_id", context.userId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
   });
