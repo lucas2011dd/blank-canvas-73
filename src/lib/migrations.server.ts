@@ -82,6 +82,53 @@ function isLoggedOutEvolutionError(error: unknown): boolean {
   );
 }
 
+function hasExplicitPairingLossText(source: unknown): boolean {
+  const haystack = typeof source === "object" && source !== null
+    ? JSON.stringify(source, Object.getOwnPropertyNames(source)).toLowerCase()
+    : String(source ?? "").toLowerCase();
+  return (
+    haystack.includes("device_removed") ||
+    haystack.includes("logged_out") ||
+    haystack.includes("logged out") ||
+    haystack.includes("logout") ||
+    haystack.includes("unpaired") ||
+    haystack.includes("pairing_lost") ||
+    haystack.includes("reauth_required")
+  );
+}
+
+function isAuthLikeTransientDuringMigration(source: unknown): boolean {
+  if (hasExplicitPairingLossText(source)) return false;
+  const haystack = typeof source === "object" && source !== null
+    ? JSON.stringify(source, Object.getOwnPropertyNames(source)).toLowerCase()
+    : String(source ?? "").toLowerCase();
+  return (
+    haystack.includes("401") ||
+    haystack.includes("unauthoriz") ||
+    haystack.includes("forbidden") ||
+    haystack.includes("not connected") ||
+    haystack.includes("not_connected")
+  );
+}
+
+async function auditLog(supabase: any, args: {
+  userId?: string | null;
+  action: string;
+  entity?: string;
+  entityId?: string | null;
+  metadata?: Record<string, unknown>;
+}) {
+  try {
+    await supabase.from("audit_logs").insert({
+      user_id: args.userId ?? null,
+      action: args.action,
+      entity: args.entity ?? "group_migration",
+      entity_id: args.entityId ?? null,
+      metadata: args.metadata ?? {},
+    });
+  } catch { /* audit best-effort */ }
+}
+
 function pairingLostSignal(_conn: any, state?: any): boolean {
   // IMPORTANTE: NÃO varrer conn.metadata aqui. markConnectionReauthRequired
   // grava breadcrumbs (`pairing_lost_reason: "device_removed"`, `status_reason: 401`,
@@ -191,7 +238,7 @@ async function releaseConnectionLock(supabase: any, connectionId: string): Promi
 /**
  * Trata queda de sessão durante a migração de forma GRADUAL:
  * antes de pausar tudo e exigir novo QR, tenta restart silencioso até
- * `MIGRATION_MAX_SESSION_DROPS` (default 3) vezes consecutivas, com backoff
+ * `MIGRATION_MAX_SESSION_DROPS` (default 6) vezes consecutivas, com backoff
  * exponencial. Só marca `reauth_required` após esgotar as tentativas.
  *
  * Motivo: Baileys costuma reportar `close`/`statusReason:401` transitório
@@ -212,41 +259,77 @@ async function handleSessionDrop(
   const meta = (conn?.metadata as Record<string, any> | null) ?? {};
   const prev = Number(meta.session_drop_count ?? 0);
   const failCount = prev + 1;
-  const maxFails = Number(process.env.MIGRATION_MAX_SESSION_DROPS ?? 3);
+  const maxFails = Number(process.env.MIGRATION_MAX_SESSION_DROPS ?? 6);
   const reasonStr = typeof reason === "string" ? reason : (reason as any)?.message ?? JSON.stringify(reason);
 
-  try {
-    await supabase.from("audit_logs").insert({
-      user_id: mig.user_id,
-      action: "migration_session_drop",
-      entity: "connection",
-      entity_id: mig.connection_id,
-      metadata: {
-        instance,
-        reason: String(reasonStr ?? ""),
-        fail_count: failCount,
-        max_fails: maxFails,
-        migration_id: mig.id,
-      },
-    });
-  } catch { /* audit best-effort */ }
+  await auditLog(supabase, {
+    userId: mig.user_id,
+    action: "migration_session_drop",
+    entity: "connection",
+    entityId: mig.connection_id,
+    metadata: {
+      instance,
+      reason: String(reasonStr ?? ""),
+      fail_count: failCount,
+      max_fails: maxFails,
+      migration_id: mig.id,
+    },
+  });
 
   if (failCount >= maxFails) {
-    await markConnectionReauthRequired(supabase, {
-      connectionId: mig.connection_id,
+    // Antes de pausar/matar a automação, confirma com o estado vivo da
+    // Evolution. Se o limite foi atingido por 401/close transitório, mantém a
+    // fila em backoff em vez de exigir QR e derrubar o WhatsApp.
+    const confirmation = await resolveEvolutionStatus(instance).catch(() => null);
+    if (hasExplicitPairingLossText(confirmation?.state ?? reason)) {
+      await markConnectionReauthRequired(supabase, {
+        connectionId: mig.connection_id,
+        userId: mig.user_id,
+        instanceName: instance,
+        reason: String(reasonStr ?? "device_removed"),
+      });
+      await requeueTransientFailures(supabase, mig.id);
+      await auditLog(supabase, {
+        userId: mig.user_id,
+        action: "migration_reauth_confirmed",
+        entity: "connection",
+        entityId: mig.connection_id,
+        metadata: { instance, migration_id: mig.id, confirmation_state: confirmation?.state ?? null, fail_count: failCount },
+      });
+      return { decision: "reauth_required", failCount };
+    }
+
+    await auditLog(supabase, {
       userId: mig.user_id,
-      instanceName: instance,
-      reason: String(reasonStr ?? "device_removed"),
+      action: "migration_reauth_suppressed",
+      entity: "connection",
+      entityId: mig.connection_id,
+      metadata: { instance, migration_id: mig.id, confirmation_state: confirmation?.state ?? null, fail_count: failCount },
     });
-    await requeueTransientFailures(supabase, mig.id);
-    return { decision: "reauth_required", failCount };
   }
 
-  // Restart silencioso (preserva sessão — nunca logout).
-  await evolution.restart(instance).catch(() => undefined);
+  // Restart silencioso com circuito: não reinicia na primeira oscilação e não
+  // reinicia em rajada. O restart em loop logo após addGroupParticipants era a
+  // principal fonte de sobrecarga e queda total da sessão.
+  const restartAfterDrops = Number(process.env.MIGRATION_RESTART_AFTER_DROPS ?? 2);
+  const restartCooldownMs = Number(process.env.MIGRATION_RESTART_COOLDOWN_MS ?? 120_000);
+  const lastRestartAt = Date.parse(String(meta.migration_restart_at ?? "")) || 0;
+  const shouldRestart = failCount >= restartAfterDrops && Date.now() - lastRestartAt > restartCooldownMs;
+  if (shouldRestart) {
+    await evolution.restart(instance).catch(() => undefined);
+    await auditLog(supabase, {
+      userId: mig.user_id,
+      action: "migration_silent_restart",
+      entity: "connection",
+      entityId: mig.connection_id,
+      metadata: { instance, migration_id: mig.id, fail_count: failCount, restart_after_drops: restartAfterDrops },
+    });
+  }
 
   await supabase.from("connections").update({
-    status: "connecting",
+    status: conn?.status === "online" ? "online" : "connecting",
+    auto_reconnect: true,
+    disconnected_manually: false,
     last_sync_at: new Date().toISOString(),
     metadata: {
       ...meta,
@@ -254,13 +337,14 @@ async function handleSessionDrop(
       session_drop_count: failCount,
       last_session_drop_at: new Date().toISOString(),
       last_session_drop_reason: String(reasonStr ?? ""),
-      evolution_state: "graceful_restart_pending",
+      evolution_state: shouldRestart ? "graceful_restart_pending" : "migration_backoff_without_restart",
       migration_recovery_status_preserved: conn?.status === "online",
+      ...(shouldRestart ? { migration_restart_at: new Date().toISOString() } : {}),
     },
   }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
 
   // Backoff exponencial: 30s → 60s → 120s (teto 3min).
-  const baseMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_MS ?? 30_000);
+  const baseMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_MS ?? 60_000);
   const capMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_CAP_MS ?? 180_000);
   const backoffMs = Math.min(baseMs * (2 ** (failCount - 1)), capMs);
 
@@ -358,6 +442,9 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         delete cleanMeta.device_removed_at;
         delete cleanMeta.status_reason;
         delete cleanMeta.last_evolution_error_code;
+        delete cleanMeta.session_drop_count;
+        delete cleanMeta.last_session_drop_at;
+        delete cleanMeta.last_session_drop_reason;
         cleanMeta.evolution_instance = instance;
         cleanMeta.evolution_state = "open";
         await supabase.from("connections").update({
@@ -370,7 +457,12 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         const state = await evolution.state(instance).catch(() => null);
         const sessionRemoved = isLoggedOutEvolutionError(state) || pairingLostSignal(conn, state);
           if (sessionRemoved) {
-            const outcome = await handleSessionDrop(supabase, mig, conn, instance, state ?? "device_removed");
+            const { data: freshConn } = await supabase.from("connections")
+              .select("status,metadata,user_id,last_reconnect_attempt_at")
+              .eq("id", mig.connection_id)
+              .eq("user_id", mig.user_id)
+              .maybeSingle();
+            const outcome = await handleSessionDrop(supabase, mig, freshConn ?? conn, instance, state ?? "device_removed");
             return { migrationId, skipped: true, reason: outcome.decision, sessionDropCount: outcome.failCount };
           }
 
@@ -550,10 +642,12 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         // A Evolution v2 às vezes retorna lista vazia mesmo em sucesso.
         // Marcar como "added" com nota de incerteza é mais seguro que falhar.
         if (!resolvedIt && list.length === 0) {
-          // Resposta vazia: assumir sucesso (comportamento observado na Evolution v2)
+          // Resposta vazia: assumir sucesso (comportamento observado na Evolution v2),
+          // mas deixando rastro visível para revisão/auditoria em produção.
           await supabase.from("group_migration_targets").update({
             status: "added", phone: expectedPhone, jid: `${expectedPhone}@s.whatsapp.net`,
             added_at: new Date().toISOString(),
+            error: "resposta_vazia_presumido_sucesso",
           }).eq("id", t.id);
           added++;
         } else {
@@ -565,7 +659,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       }
     }
   } catch (e: any) {
-    if (isPairingLostEvolutionError(e) || isLoggedOutEvolutionError(e)) {
+    if (hasExplicitPairingLossText(e) && (isPairingLostEvolutionError(e) || isLoggedOutEvolutionError(e))) {
       // Não pausa de cara: usa handleSessionDrop (restart + backoff).
       // Só marca reauth_required após MIGRATION_MAX_SESSION_DROPS quedas
       // consecutivas — evita QR desnecessário quando a sessão volta sozinha.
@@ -581,7 +675,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true, sessionDropCount: outcome.failCount };
     }
 
-    if (isTransientEvolutionError(e)) {
+    if (isTransientEvolutionError(e) || isAuthLikeTransientDuringMigration(e)) {
       // CORREÇÃO (item 6): backoff EXPONENCIAL para falhas transientes.
       // Antes: delay fixo (30s) independente de quantas falhas seguidas.
       // Agora: 30s → 60s → 120s → 240s (teto 5min), com contador em
@@ -604,19 +698,18 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         },
       });
       // Log de auditoria para acompanhar o padrão de falhas transientes.
-      try {
-        await supabase.from("audit_logs").insert({
-          user_id: mig.user_id,
-          action: "migration_transient_backoff",
-          entity: "group_migration",
-          entity_id: mig.id,
-          metadata: {
-            consecutive_failures: nextConsecutive,
-            retry_delay_ms: retryDelayMs,
-            error: String(e?.message ?? e),
-          },
-        });
-      } catch { /* audit best-effort */ }
+      await auditLog(supabase, {
+        userId: mig.user_id,
+        action: "migration_transient_backoff",
+        entity: "group_migration",
+        entityId: mig.id,
+        metadata: {
+          consecutive_failures: nextConsecutive,
+          retry_delay_ms: retryDelayMs,
+          error: String(e?.message ?? e),
+          auth_like_transient: isAuthLikeTransientDuringMigration(e),
+        },
+      });
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true };
     }
     for (const t of batch) {
@@ -669,6 +762,10 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         delete (cleaned as any).session_drop_count;
         delete (cleaned as any).last_session_drop_at;
         delete (cleaned as any).last_session_drop_reason;
+        delete (cleaned as any).pairing_lost_at;
+        delete (cleaned as any).pairing_lost_reason;
+        delete (cleaned as any).device_removed_at;
+        delete (cleaned as any).status_reason;
         await supabase.from("connections")
           .update({ metadata: cleaned })
           .eq("id", mig.connection_id).eq("user_id", mig.user_id);

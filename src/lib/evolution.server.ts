@@ -643,7 +643,6 @@ export function payloadIndicatesPairingLost(source: unknown): boolean {
     normalized === "logged out" ||
     normalized === "logout" ||
     normalized === "unpaired" ||
-    normalized === "unauthorized" ||
     normalized.includes("device_removed") ||
     normalized.includes("logged_out") ||
     normalized.includes("logged out") ||
@@ -676,7 +675,6 @@ export function isPairingLostEvolutionState(state: unknown): boolean {
     normalized === "logged out" ||
     normalized === "logout" ||
     normalized === "unpaired" ||
-    normalized === "unauthorized" ||
     normalized.includes("device_removed") ||
     normalized.includes("logged_out") ||
     normalized.includes("logged out") ||
@@ -688,6 +686,10 @@ export function isPairingLostEvolutionError(error: unknown): boolean {
   const haystack = typeof error === "object" && error !== null
     ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
     : String(error ?? "").toLowerCase();
+  // Só classifica como pareamento perdido quando há sinal textual explícito.
+  // Durante addGroupParticipants a Evolution/Baileys pode retornar 401,
+  // unauthorized ou forbidden por fechamento transitório do stream; tratar isso
+  // como logout mata a sessão sem necessidade após o primeiro batch.
   const explicitPairingLoss =
     haystack.includes("device_removed") ||
     haystack.includes("logged_out") ||
@@ -696,18 +698,10 @@ export function isPairingLostEvolutionError(error: unknown): boolean {
     haystack.includes("unpaired") ||
     haystack.includes("pairing_lost") ||
     haystack.includes("reauth_required");
-  const hardUnauthorized =
-    haystack.includes("401") &&
-    (
-      haystack.includes("unauthoriz") ||
-      haystack.includes("forbidden") ||
-      explicitPairingLoss
-    );
 
   return (
     isPairingLostEvolutionState(haystack) ||
-    explicitPairingLoss ||
-    hardUnauthorized
+    explicitPairingLoss
   );
 }
 
@@ -741,6 +735,9 @@ export function isTransientEvolutionError(error: unknown): boolean {
     haystack.includes("the instance is not connected") ||
     haystack.includes("not_connected") ||
     haystack.includes("not connected") ||
+    haystack.includes("401") ||
+    haystack.includes("unauthoriz") ||
+    haystack.includes("forbidden") ||
     haystack.includes("timed out") ||
     haystack.includes("timeout") ||
     haystack.includes("socket") ||
@@ -804,6 +801,23 @@ export async function reconnectEvolutionSession(
   if (before?.status === "online") return { ...before, restarted: false };
   if (before && isPairingLostEvolutionState(before.state)) return { ...before, restarted: false };
 
+  // Se nem o probe de estado respondeu, não dispare restart às cegas. Em pico
+  // de latência da Evolution isso multiplicava restarts por tick e podia
+  // derrubar uma sessão que ainda estava viva.
+  if (!before) {
+    let latest: { status: EvolutionConnectionStatus; state?: string; usable: boolean } = {
+      status: "connecting",
+      state: "status_probe_failed",
+      usable: false,
+    };
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      await wait(delayMs + attempt * 500);
+      latest = await resolveEvolutionStatus(instanceName).catch(() => latest);
+      if (latest.status === "online") return { ...latest, restarted: false };
+    }
+    return { ...latest, restarted: false };
+  }
+
   // Reconexão automática preserva sessão: usa restart/reload. /connect só é
   // permitido em ação manual, pois em Baileys pode iniciar fluxo de QR.
   // /instance/restart retorna 400 quando a sessão não está conectada.
@@ -811,7 +825,7 @@ export async function reconnectEvolutionSession(
   // se aciona /connect para gerar novo QR.
   await evolution.restart(instanceName).catch(() => undefined);
 
-  let latest = before ?? { status: "connecting" as EvolutionConnectionStatus, state: "restart_requested", usable: false };
+  let latest = before;
   for (let attempt = 0; attempt < attempts; attempt++) {
     await wait(delayMs + attempt * 500);
     latest = await resolveEvolutionStatus(instanceName).catch(() => latest);
