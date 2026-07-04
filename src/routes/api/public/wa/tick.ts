@@ -122,14 +122,19 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               }).catch(() => null);
 
               // -------- Watchdog anti-trava (Baileys 515 + pre-keys) --------
-              // A Evolution pode reportar "open" enquanto o Baileys travou no
-              // meio da geração de pre-keys / sync de histórico. Fazemos um
-              // probe leve (canReadSession) em intervalos e, se falhar, damos
-              // RESTART (nunca logout — não invalida a sessão pareada).
+              // Cooldown é POR INSTÂNCIA (via metadata da connection) — outras
+              // instâncias não param se uma travar.
+              // Backoff EXPONENCIAL entre restarts que não resolvem:
+              //   fails=0 → base, fails=1 → 2×, fails=2 → 4×, ... limitado a 6×.
+              // Chama SOMENTE evolution.restart() — nunca logout — para preservar
+              // a sessão pareada sem exigir novo QR.
               const meta = (conn.metadata as Record<string, any> | null) ?? {};
               const now = Date.now();
               const probeInterval = Number(process.env.WATCHDOG_INTERVAL_MS ?? 600_000);
-              const restartCooldown = Number(process.env.WATCHDOG_RESTART_COOLDOWN_MS ?? 600_000);
+              const baseCooldown = Number(process.env.WATCHDOG_RESTART_COOLDOWN_MS ?? 600_000);
+              const failCount = Number(meta.watchdog_fail_count ?? 0);
+              const backoffMult = Math.min(2 ** failCount, 8); // cap 8×
+              const restartCooldown = baseCooldown * backoffMult;
               const lastProbe = Date.parse(meta.watchdog_last_check_at ?? "") || 0;
               const lastRestart = Date.parse(meta.watchdog_restart_at ?? "") || 0;
               if (
@@ -143,11 +148,38 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                   watchdog_last_check_at: new Date().toISOString(),
                   watchdog_last_alive: alive,
                 };
-                if (!alive && now - lastRestart > restartCooldown) {
-                  await evolution.restart(instance).catch(() => null);
+                if (alive) {
+                  patch.watchdog_fail_count = 0;
+                } else if (now - lastRestart > restartCooldown) {
+                  let restartErr: unknown = null;
+                  try {
+                    // AUDIT: RESTART automático — não é logout, sessão preservada.
+                    await evolution.restart(instance);
+                  } catch (e) { restartErr = e; }
+                  const { extractEvolutionErrorCode } = await import("@/lib/evolution.server");
+                  const errCode = extractEvolutionErrorCode(restartErr ?? evState);
                   patch.watchdog_restart_at = new Date().toISOString();
                   patch.watchdog_restart_reason = "unresponsive_but_online";
-                  console.warn(`[watchdog] restart instância ${instance} (sessão travada)`);
+                  patch.watchdog_fail_count = failCount + 1;
+                  patch.watchdog_last_error_code = errCode;
+                  patch.watchdog_next_backoff_ms = baseCooldown * Math.min(2 ** (failCount + 1), 8);
+                  console.warn(`[watchdog] restart instância ${instance} (fails=${failCount + 1}, code=${errCode})`);
+                  try {
+                    await supabaseAdmin.from("audit_logs").insert({
+                      user_id: (conn as any).user_id ?? null,
+                      action: "whatsapp_watchdog_restart",
+                      entity: "connection",
+                      entity_id: conn.id,
+                      metadata: {
+                        instance,
+                        error_code: errCode,
+                        error_message: restartErr instanceof Error ? restartErr.message : String(restartErr ?? ""),
+                        fail_count: failCount + 1,
+                        next_backoff_ms: patch.watchdog_next_backoff_ms,
+                        evolution_state: evState,
+                      },
+                    });
+                  } catch { /* audit best-effort */ }
                 }
                 await supabaseAdmin.from("connections").update({ metadata: patch }).eq("id", conn.id);
               }
