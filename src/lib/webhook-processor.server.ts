@@ -6,6 +6,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 const BULK_FAST_ACK_EVENTS = new Set([
   "contacts.upsert", "CONTACTS_UPSERT",
   "contacts.update", "CONTACTS_UPDATE",
+  "chats.upsert",    "CHATS_UPSERT",
   "chats.update",    "CHATS_UPDATE",
   "groups.upsert",   "GROUPS_UPSERT",
   "group-participants.update", "GROUP_PARTICIPANTS_UPDATE",
@@ -20,10 +21,14 @@ async function handleEvent(
   event: string,
   data: any,
 ): Promise<void> {
-  const { data: conn } = await admin.from("connections")
+  const { data: conn, error: connErr } = await admin.from("connections")
     .select("id,user_id,status,metadata")
     .eq("metadata->>evolution_instance", instanceName)
     .maybeSingle();
+  if (connErr) {
+    console.error("[webhook-processor] lookup ambíguo da instância", instanceName, connErr.message);
+    throw new Error(`Instância duplicada ou lookup inválido: ${instanceName}`);
+  }
   if (!conn) return;
 
   if (event === "connection.update" || event === "CONNECTION_UPDATE") {
@@ -149,6 +154,18 @@ async function handleEvent(
 
   if (event === "contacts.upsert" || event === "CONTACTS_UPSERT") {
     const list: any[] = Array.isArray(data) ? data : (data.contacts ?? []);
+    if (String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() !== "true") {
+      await admin.from("connections").update({
+        last_sync_at: new Date().toISOString(),
+        metadata: {
+          ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+          evolution_instance: instanceName,
+          contacts_upsert_deferred: list.length,
+          contacts_upsert_deferred_at: new Date().toISOString(),
+        },
+      }).eq("id", conn.id);
+      return;
+    }
     if (list.length > 200) {
       // Dump histórico enorme: só marca; sync completo é sob demanda.
       await admin.from("connections").update({
@@ -163,39 +180,50 @@ async function handleEvent(
       return;
     }
     const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
+    const groupRows: any[] = [];
+    const contactRows: any[] = [];
     for (const c of list) {
       const jid = String(c.remoteJid ?? c.id ?? c.jid ?? "");
       if (!jid) continue;
       if (jid.endsWith("@g.us")) {
-        await admin.from("whatsapp_groups").upsert({
+        groupRows.push({
           user_id: conn.user_id, connection_id: conn.id, jid,
           subject: String(c.pushName ?? c.name ?? c.notify ?? "Grupo"),
           picture_url: c.profilePicUrl ?? null,
           metadata: { instance_id: c.instanceId ?? null },
-        }, { onConflict: "connection_id,jid" });
+        });
         continue;
       }
       const phone = digits(jid.split("@")[0]);
       if (!phone) continue;
-      const { data: exists } = await admin.from("contacts").select("id")
-        .eq("user_id", conn.user_id).eq("phone", phone).maybeSingle();
-      if (!exists) {
-        await admin.from("contacts").insert({
-          user_id: conn.user_id,
-          name: String(c.pushName ?? c.name ?? c.notify ?? phone),
-          phone, external_source: "whatsapp", external_id: jid,
-        });
-      }
+      contactRows.push({
+        user_id: conn.user_id,
+        name: String(c.pushName ?? c.name ?? c.notify ?? phone),
+        phone,
+        external_source: "whatsapp",
+        external_id: jid,
+      });
+    }
+    if (groupRows.length) {
+      await admin.from("whatsapp_groups").upsert(groupRows, { onConflict: "connection_id,jid" });
+    }
+    if (contactRows.length) {
+      const phones = Array.from(new Set(contactRows.map((row) => row.phone)));
+      const { data: existing } = await admin.from("contacts")
+        .select("phone")
+        .eq("user_id", conn.user_id)
+        .in("phone", phones);
+      const existingPhones = new Set((existing ?? []).map((row: any) => row.phone));
+      const toInsert = contactRows.filter((row) => !existingPhones.has(row.phone));
+      if (toInsert.length) await admin.from("contacts").insert(toInsert);
     }
     return;
   }
 
   if (
-    event === "chats.upsert"  || event === "CHATS_UPSERT" ||
     event === "groups.upsert" || event === "GROUPS_UPSERT"
   ) {
     const list: any[] = Array.isArray(data) ? data : (data.chats ?? data.groups ?? data.data ?? []);
-    const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
     for (const ch of list) {
       const jid = String(ch.remoteJid ?? ch.id ?? ch.jid ?? "");
       if (!jid || jid === "status@broadcast" || jid.endsWith("@newsletter")) continue;
@@ -209,16 +237,6 @@ async function handleEvent(
           metadata: { instance_id: ch.instanceId ?? null },
         }, { onConflict: "connection_id,jid" });
         continue;
-      }
-      const phone = digits(jid.split("@")[0]);
-      if (!phone || phone.length < 8 || phone.length > 15) continue;
-      const { data: existingConv } = await admin.from("conversations").select("id")
-        .eq("user_id", conn.user_id).eq("connection_id", conn.id).eq("title", phone).maybeSingle();
-      if (!existingConv) {
-        await admin.from("conversations").insert({
-          user_id: conn.user_id, connection_id: conn.id, title: phone,
-          last_message_at: new Date().toISOString(),
-        });
       }
     }
     return;

@@ -124,9 +124,12 @@ function webhookConfig(url: string, key: string) {
   return {
     enabled: true,
     url,
-    byEvents: false,
+    // Filtra na origem. Com byEvents=false algumas instalações da Evolution
+    // enviam dumps grandes (contacts/chats/presence) mesmo com `events` setado,
+    // o que sobrecarrega a VPS e atrasa os eventos críticos de QR/status.
+    byEvents: true,
     base64: false,
-    webhook_by_events: false,
+    webhook_by_events: true,
     webhook_base64: false,
     events,
     headers: webhookAuthHeaders(key),
@@ -318,12 +321,9 @@ export const evolution = {
 
   async canReadSession(instanceName: string): Promise<boolean> {
     try {
-      const res = await call<any>(`/chat/findChats/${encodeURIComponent(instanceName)}`, {
-        method: "POST",
-        body: {},
-      });
-      const rows = Array.isArray(res) ? res : (res?.chats ?? res?.data ?? []);
-      return Array.isArray(rows) && rows.length > 0;
+      const rawState = await this.state(instanceName);
+      const state = extractEvolutionConnectionState(rawState);
+      return evolutionStateToStatus(state) === "online" && !payloadIndicatesPairingLost(rawState);
     } catch {
       return false;
     }
@@ -358,7 +358,7 @@ export const evolution = {
   async logout(instanceName: string) {
     const path = `/instance/logout/${encodeURIComponent(instanceName)}`;
     let lastError: unknown = null;
-    for (const method of ["DELETE", "POST", "GET"] as const) {
+    for (const method of ["DELETE", "POST"] as const) {
       try {
         return await call(path, { method, timeoutMs: 5_000 });
       } catch (error) {
@@ -808,6 +808,9 @@ export async function reconnectEvolutionSession(
   // /instance/restart retorna 400 quando a sessão não está conectada.
   // Isso é esperado após queda total — ignoramos e deixamos o chamador decidir
   // se aciona /connect para gerar novo QR.
+  const recheck = await resolveEvolutionStatus(instanceName).catch(() => null);
+  if (recheck?.status === "online") return { ...recheck, restarted: false };
+
   await evolution.restart(instanceName).catch(() => undefined);
 
   let latest = before;

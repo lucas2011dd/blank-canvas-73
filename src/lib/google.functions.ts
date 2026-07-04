@@ -2,26 +2,12 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
-async function refreshGoogleAccessToken(refreshToken: string) {
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: process.env.GOOGLE_CLIENT_ID!,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-      refresh_token: refreshToken,
-      grant_type: "refresh_token",
-    }),
-  });
-  if (!res.ok) throw new Error("Falha ao renovar token Google");
-  return await res.json() as { access_token: string; expires_in: number };
-}
-
 async function getValidAccessToken(supabase: any, userId: string): Promise<string> {
   const { data: row } = await supabase.from("google_tokens").select("*").eq("user_id", userId).maybeSingle();
   if (!row) throw new Error("Google não conectado — vá em Configurações");
   if (row.expires_at && new Date(row.expires_at).getTime() > Date.now() + 30_000) return row.access_token;
   if (!row.refresh_token) throw new Error("Sessão Google expirada — reconecte");
+  const { refreshGoogleAccessToken } = await import("@/lib/google.server");
   const fresh = await refreshGoogleAccessToken(row.refresh_token);
   await supabase.from("google_tokens").update({
     access_token: fresh.access_token,
