@@ -207,7 +207,6 @@ async function handleEvent(
     event === "groups.upsert" || event === "GROUPS_UPSERT"
   ) {
     const list: any[] = Array.isArray(data) ? data : (data.chats ?? data.groups ?? data.data ?? []);
-    const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
     for (const ch of list) {
       const jid = String(ch.remoteJid ?? ch.id ?? ch.jid ?? "");
       if (!jid || jid === "status@broadcast" || jid.endsWith("@newsletter")) continue;
@@ -221,16 +220,6 @@ async function handleEvent(
           metadata: { instance_id: ch.instanceId ?? null },
         }, { onConflict: "connection_id,jid" });
         continue;
-      }
-      const phone = digits(jid.split("@")[0]);
-      if (!phone || phone.length < 8 || phone.length > 15) continue;
-      const { data: existingConv } = await admin.from("conversations").select("id")
-        .eq("user_id", conn.user_id).eq("connection_id", conn.id).eq("title", phone).maybeSingle();
-      if (!existingConv) {
-        await admin.from("conversations").insert({
-          user_id: conn.user_id, connection_id: conn.id, title: phone,
-          last_message_at: new Date().toISOString(),
-        });
       }
     }
     return;
