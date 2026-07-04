@@ -802,30 +802,38 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
     if (!connRow) throw new Error("Conexão não encontrada");
     const name = instanceNameFromConnection(connRow);
 
-    // Sync ultra-leve por padrão: grupos são necessários para seleção/migração.
-    // Dumps completos de contatos/chats/mensagens sobrecarregam a Evolution e o
-    // Worker; só rodam quando explicitamente liberados por duas flags.
-    const allowHeavySync = String(process.env.WHATSAPP_ALLOW_HEAVY_SYNC ?? "").toLowerCase() === "true";
-    const syncContacts = allowHeavySync && String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() === "true";
-    const syncChats = allowHeavySync && String(process.env.WHATSAPP_SYNC_CHATS ?? "").toLowerCase() === "true";
-    const contactsLimit = Math.min(safeNumberAtLeast(process.env.WHATSAPP_SYNC_CONTACTS_LIMIT, 500, 1), 5_000);
-    const chatsLimit = Math.min(safeNumberAtLeast(process.env.WHATSAPP_SYNC_CHATS_LIMIT, 200, 1), 1_000);
+    // Sync com caps seguros para VPS 4GB/2 núcleos. Grupos sempre; contatos e
+    // chats vêm com limite (default 1000/500) e podem ser desligados por env.
+    // Só desligue via env se a Evolution estiver derrubando a sessão.
+    const disableContacts = String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() === "false";
+    const disableChats = String(process.env.WHATSAPP_SYNC_CHATS ?? "").toLowerCase() === "false";
+    const syncContacts = !disableContacts;
+    const syncChats = !disableChats;
+    const contactsLimit = Math.min(safeNumberAtLeast(process.env.WHATSAPP_SYNC_CONTACTS_LIMIT, 1_000, 1), 5_000);
+    const chatsLimit = Math.min(safeNumberAtLeast(process.env.WHATSAPP_SYNC_CHATS_LIMIT, 500, 1), 2_000);
 
-    let contactsRes: PromiseSettledResult<any[]> = { status: "fulfilled", value: [] };
-    let chatsRes: PromiseSettledResult<any[]> = { status: "fulfilled", value: [] };
+    // Serializa as chamadas (não Promise.all) para não estourar RAM/CPU do
+    // Worker nem da Evolution ao mesmo tempo.
     const groupsRes = await Promise.resolve(evolution.fetchAllGroups(name))
       .then((value) => ({ status: "fulfilled" as const, value }), (reason) => ({ status: "rejected" as const, reason }));
+    let contactsRes: PromiseSettledResult<any[]> = { status: "fulfilled", value: [] };
     if (syncContacts) {
       contactsRes = await Promise.resolve(evolution.findContacts(name))
-        .then((value) => ({ status: "fulfilled" as const, value: value.slice(0, contactsLimit) }), (reason) => ({ status: "rejected" as const, reason }));
+        .then((value) => ({ status: "fulfilled" as const, value: (value ?? []).slice(0, contactsLimit) }), (reason) => ({ status: "rejected" as const, reason }));
     }
+    let chatsRes: PromiseSettledResult<any[]> = { status: "fulfilled", value: [] };
     if (syncChats) {
       chatsRes = await Promise.resolve(evolution.findChats(name))
-        .then((value) => ({ status: "fulfilled" as const, value: value.slice(0, chatsLimit) }), (reason) => ({ status: "rejected" as const, reason }));
+        .then((value) => ({ status: "fulfilled" as const, value: (value ?? []).slice(0, chatsLimit) }), (reason) => ({ status: "rejected" as const, reason }));
     }
     const contactsRaw = contactsRes.status === "fulfilled" ? contactsRes.value : [];
     const chatsRaw = chatsRes.status === "fulfilled" ? chatsRes.value : [];
     const groupsRaw = groupsRes.status === "fulfilled" ? groupsRes.value : [];
+    const fetchErrors = {
+      contacts: contactsRes.status === "rejected" ? String((contactsRes as PromiseRejectedResult).reason?.message ?? (contactsRes as PromiseRejectedResult).reason ?? "") : null,
+      chats: chatsRes.status === "rejected" ? String((chatsRes as PromiseRejectedResult).reason?.message ?? (chatsRes as PromiseRejectedResult).reason ?? "") : null,
+      groups: groupsRes.status === "rejected" ? String((groupsRes as PromiseRejectedResult).reason?.message ?? (groupsRes as PromiseRejectedResult).reason ?? "") : null,
+    };
 
     // Detecta socket morto sem confundir 401/Connection Closed transitório com
     // logout definitivo. Só device_removed/logout/unpaired deve pausar tudo e
