@@ -28,7 +28,7 @@ export const updateMyProfile = createServerFn({ method: "POST" })
     avatar_url: z.string().url().optional().nullable(),
   }).parse(d))
   .handler(async ({ context, data }) => {
-    const { data: row, error } = await context.supabase.from("profiles").update(data).eq("id", context.userId).select("*").single();
+    const { data: row, error } = await context.supabase.from("profiles").upsert({ id: context.userId, ...data }).eq("id", context.userId).select("*").maybeSingle();
     if (error) throw new Error(error.message);
     return row;
   });
