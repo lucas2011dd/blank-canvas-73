@@ -705,10 +705,9 @@ export function isPairingLostEvolutionError(error: unknown): boolean {
 }
 
 export function isTransientEvolutionError(error: unknown): boolean {
-  // IMPORTANTE: device_removed/logged_out/401 NÃO são erros transientes —
-  // são erros permanentes de pareamento. Tratá-los como transientes causava
-  // loop de reconexão que o WhatsApp interpretava como comportamento suspeito,
-  // gerando mais device_removed e invalidando a sessão completamente.
+  // IMPORTANTE: só device_removed/logged_out/logout/unpaired são perda real de
+  // pareamento. statusReason 401 isolado durante addGroupParticipants pode ser
+  // apenas fechamento transitório do stream Baileys e deve cair em backoff.
   if (isPairingLostEvolutionError(error)) return false;
   const haystack = typeof error === "object" && error !== null
     ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
