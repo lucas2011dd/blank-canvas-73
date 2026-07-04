@@ -67,11 +67,10 @@ function isLoggedOutEvolutionError(error: unknown): boolean {
     : String(error ?? "").toLowerCase();
   return (
     haystack.includes("device_removed") ||
-    haystack.includes("statusreason\":401") ||
-    haystack.includes("statusreason:401") ||
     haystack.includes("logout") ||
     haystack.includes("logged out") ||
-    haystack.includes("stream:error") && haystack.includes("401")
+    haystack.includes("logged_out") ||
+    haystack.includes("unpaired")
   );
 }
 
@@ -88,7 +87,14 @@ function pairingLostSignal(_conn: any, state?: any): boolean {
     state?.statusReason ??
     state?.data?.statusReason ??
     state?.data?.instance?.statusReason;
-  if (reason === 401 || String(reason) === "401") return true;
+  const reasonText = String(reason ?? "").toLowerCase();
+  if (
+    reasonText.includes("device_removed") ||
+    reasonText.includes("logged_out") ||
+    reasonText.includes("logged out") ||
+    reasonText.includes("logout") ||
+    reasonText.includes("unpaired")
+  ) return true;
   const stateField = String(
     state?.instance?.state ??
     state?.instance?.status ??
