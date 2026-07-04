@@ -412,10 +412,10 @@ async function handleSessionDrop(
 
 
 
-export async function processGroupMigrationBatch(supabase: any, migrationId: string, userIdScope?: string) {
+export async function processGroupMigrationBatch(supabase: any, migrationId: string, userIdScope?: string): Promise<any> {
   const catchStartedAt = new Date();
   let catchMig: any = null;
-  let catchResult: unknown = null;
+  let catchResult: any = null;
   let catchError: unknown = null;
 
   // Precisamos do connection_id antes de pegar a trava — carrega a migração primeiro.
