@@ -259,7 +259,7 @@ async function handleSessionDrop(
   const meta = (conn?.metadata as Record<string, any> | null) ?? {};
   const prev = Number(meta.session_drop_count ?? 0);
   const failCount = prev + 1;
-  const maxFails = Number(process.env.MIGRATION_MAX_SESSION_DROPS ?? 6);
+  const maxFails = Number(process.env.MIGRATION_MAX_SESSION_DROPS ?? 3);
   const reasonStr = typeof reason === "string" ? reason : (reason as any)?.message ?? JSON.stringify(reason);
 
   await auditLog(supabase, {
