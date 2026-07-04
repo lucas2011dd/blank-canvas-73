@@ -153,6 +153,20 @@ async function handleEvent(
   }
 
   if (event === "contacts.upsert" || event === "CONTACTS_UPSERT") {
+    if (data?.bulk_deferred) {
+      await admin.from("connections").update({
+        last_sync_at: new Date().toISOString(),
+        metadata: {
+          ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+          evolution_instance: instanceName,
+          contacts_upsert_deferred: data.item_count ?? null,
+          contacts_upsert_deferred_raw_bytes: data.raw_bytes ?? null,
+          contacts_upsert_deferred_reason: data.reason ?? "bulk_deferred",
+          contacts_upsert_deferred_at: new Date().toISOString(),
+        },
+      }).eq("id", conn.id);
+      return;
+    }
     const list: any[] = Array.isArray(data) ? data : (data.contacts ?? []);
     if (String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() !== "true") {
       await admin.from("connections").update({
@@ -223,6 +237,20 @@ async function handleEvent(
   if (
     event === "groups.upsert" || event === "GROUPS_UPSERT"
   ) {
+    if (data?.bulk_deferred) {
+      await admin.from("connections").update({
+        last_sync_at: new Date().toISOString(),
+        metadata: {
+          ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+          evolution_instance: instanceName,
+          groups_upsert_deferred: data.item_count ?? null,
+          groups_upsert_deferred_raw_bytes: data.raw_bytes ?? null,
+          groups_upsert_deferred_reason: data.reason ?? "bulk_deferred",
+          groups_upsert_deferred_at: new Date().toISOString(),
+        },
+      }).eq("id", conn.id);
+      return;
+    }
     const list: any[] = Array.isArray(data) ? data : (data.chats ?? data.groups ?? data.data ?? []);
     for (const ch of list) {
       const jid = String(ch.remoteJid ?? ch.id ?? ch.jid ?? "");
