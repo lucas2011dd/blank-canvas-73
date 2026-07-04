@@ -5,9 +5,17 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 export const getMyProfile = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
-    const { data, error } = await context.supabase.from("profiles").select("*").eq("id", context.userId).single();
+    const { data, error } = await context.supabase.from("profiles").select("*").eq("id", context.userId).maybeSingle();
     if (error) throw new Error(error.message);
-    return data;
+    if (data) return data;
+    // Auto-cria o profile se ainda não existe
+    const { data: created, error: insErr } = await context.supabase
+      .from("profiles")
+      .insert({ id: context.userId })
+      .select("*")
+      .maybeSingle();
+    if (insErr) throw new Error(insErr.message);
+    return created;
   });
 
 export const updateMyProfile = createServerFn({ method: "POST" })
