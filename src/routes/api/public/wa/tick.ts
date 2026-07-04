@@ -5,7 +5,6 @@
 // Protegido por TICK_SECRET. O segredo é aceito APENAS via header
 // para não vazar em logs de proxy/CDN/referrer.
 import { createFileRoute } from "@tanstack/react-router";
-import { buildWebhookUrl } from "@/lib/webhook-url";
 
 // Rate limit simples em memória (por IP): 60 req/min.
 const RATE: Map<string, { count: number; reset: number }> = (globalThis as any).__tickRate ??= new Map();
@@ -334,7 +333,10 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               didWork = true;
             }
 
-            const min = bc.min_delay_seconds ?? 8, max = bc.max_delay_seconds ?? 45;
+            const minFloor = Number(process.env.BROADCAST_MIN_DELAY_FLOOR_SECONDS ?? 30);
+            const maxFloor = Number(process.env.BROADCAST_MAX_DELAY_FLOOR_SECONDS ?? 90);
+            const min = Math.max(bc.min_delay_seconds ?? 30, Number.isFinite(minFloor) ? minFloor : 30);
+            const max = Math.max(bc.max_delay_seconds ?? 90, Number.isFinite(maxFloor) ? maxFloor : 90, min);
             const delaySec = Math.floor(min + Math.random() * (max - min + 1));
             const nextAt = new Date(Date.now() + delaySec * 1000).toISOString();
             const { data: nextRow } = await supabaseAdmin.from("broadcast_targets")
