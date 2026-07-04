@@ -104,7 +104,10 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     targetGroupJid: z.string().optional(),
     targetSubject: z.string().trim().max(120).optional(),
     targetDescription: z.string().trim().max(500).optional(),
-    batchSize: z.number().int().min(1).max(10).default(1),
+    // HARDENING: máx 1 tanto no cliente quanto no servidor. O worker
+    // (automationBatchSize) já força 1 — deixar 10 aqui só engana a UI e
+    // reabre o risco de device_removed se alguém remover o clamp do worker.
+    batchSize: z.number().int().min(1).max(1).default(1),
     // CORREÇÃO: Defaults de delay aumentados de 15/30s para 25/60s.
     // O WhatsApp detecta padrões de adição em grupo muito rápidos como spam
     // e desconecta a sessão com device_removed. Intervalos mais longos
