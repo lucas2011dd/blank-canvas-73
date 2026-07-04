@@ -22,20 +22,20 @@ function automationBatchSize(value: unknown): number {
 }
 
 function automationDelaySeconds(minValue: unknown, maxValue: unknown): number {
-  // CORREÇÃO CRÍTICA: floors aumentados de 10/20s para 25/45s.
-  // O WhatsApp derruba sessões quando adições de grupo ocorrem em intervalos
-  // muito curtos. Pesquisas da comunidade Baileys indicam que < 20s por
-  // adição de grupo é considerado comportamento suspeito e gera device_removed.
-  // Recomendação: mínimo 25s, máximo 60s para operações de grupo.
-  const minFloor = Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 25);
-  const maxFloor = Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 45);
+  // CORREÇÃO CRÍTICA (endurecida): floors elevados para 60s / 180s.
+  // Testes de campo mostram que qualquer valor < 60s por add em grupo dispara
+  // device_removed no Baileys. 60-180s é a janela recomendada por operadores
+  // de larga escala. Se o usuário configurou algo menor na UI, sobrescrevemos
+  // silenciosamente pelo floor — priorizamos manter a sessão viva.
+  const minFloor = Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 60);
+  const maxFloor = Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 180);
   const min = Math.max(
-    Number.isFinite(Number(minValue)) ? Number(minValue) : 25,
-    Number.isFinite(minFloor) ? minFloor : 25,
+    Number.isFinite(Number(minValue)) ? Number(minValue) : 60,
+    Number.isFinite(minFloor) ? minFloor : 60,
   );
   const max = Math.max(
-    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 45,
-    Number.isFinite(maxFloor) ? maxFloor : 45,
+    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 180,
+    Number.isFinite(maxFloor) ? maxFloor : 180,
     min,
   );
   return jitter(Math.floor(min), Math.floor(max));
@@ -259,7 +259,7 @@ async function handleSessionDrop(
   const meta = (conn?.metadata as Record<string, any> | null) ?? {};
   const prev = Number(meta.session_drop_count ?? 0);
   const failCount = prev + 1;
-  const maxFails = Number(process.env.MIGRATION_MAX_SESSION_DROPS ?? 6);
+  const maxFails = Number(process.env.MIGRATION_MAX_SESSION_DROPS ?? 3);
   const reasonStr = typeof reason === "string" ? reason : (reason as any)?.message ?? JSON.stringify(reason);
 
   await auditLog(supabase, {
@@ -343,15 +343,25 @@ async function handleSessionDrop(
     },
   }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
 
-  // Backoff exponencial: 30s → 60s → 120s (teto 3min).
-  const baseMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_MS ?? 60_000);
-  const capMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_CAP_MS ?? 180_000);
+  // Backoff exponencial mais generoso: 3min → 6min → 12min (teto 15min).
+  // Backoffs curtos após queda de sessão faziam o próximo add cair no mesmo
+  // estado instável e derrubar a sessão de vez.
+  const baseMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_MS ?? 180_000);
+  const capMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_CAP_MS ?? 900_000);
   const backoffMs = Math.min(baseMs * (2 ** (failCount - 1)), capMs);
 
   await requeueTransientFailures(supabase, mig.id);
+  // Após 2 quedas consecutivas, auto-PAUSA a migração para o usuário revisar
+  // manualmente antes de continuar — melhor pausar do que insistir e queimar
+  // a sessão. O usuário reativa via botão "Retomar" no painel.
+  const autoPauseAt = Number(process.env.MIGRATION_AUTO_PAUSE_AFTER_DROPS ?? 2);
+  const shouldAutoPause = failCount >= autoPauseAt;
   await supabase.from("group_migrations").update({
-    next_attempt_at: new Date(Date.now() + backoffMs).toISOString(),
-    last_error: `Sessão oscilou (queda ${failCount}/${maxFails}). Reiniciando silenciosamente — nova tentativa em ${Math.round(backoffMs / 1000)}s.`,
+    status: shouldAutoPause ? "paused" : mig.status,
+    next_attempt_at: shouldAutoPause ? null : new Date(Date.now() + backoffMs).toISOString(),
+    last_error: shouldAutoPause
+      ? `Sessão oscilou ${failCount}x seguidas — migração PAUSADA automaticamente para proteger a conexão. Confirme se o WhatsApp está estável e clique em Retomar.`
+      : `Sessão oscilou (queda ${failCount}/${maxFails}). Aguardando ${Math.round(backoffMs / 1000)}s antes da próxima tentativa.`,
   }).eq("id", mig.id);
 
   return { decision: "graceful_retry", failCount };
@@ -515,7 +525,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   const lastAddedAt = (mig.metadata as any)?.last_batch_at
     ? new Date((mig.metadata as any).last_batch_at).getTime()
     : 0;
-  const minIntervalMs = Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 15_000);
+  const minIntervalMs = Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 60_000);
   const elapsed = Date.now() - lastAddedAt;
   if (elapsed < minIntervalMs) {
     const waitMs = Math.max(1_000, minIntervalMs - elapsed);
