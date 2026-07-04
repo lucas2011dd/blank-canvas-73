@@ -28,19 +28,23 @@ const errorMiddleware = createMiddleware().server(async ({ next }) => {
  * no HeadContent e whitelist de fonts.googleapis.com/gstatic.com — deve ser feito à parte.
  */
 const securityHeadersMiddleware = createMiddleware().server(async ({ next }) => {
-  const res = await next();
-  const response = res instanceof Response ? res : new Response(String(res ?? ""));
-  const h = response.headers;
-  if (!h.has("X-Frame-Options")) h.set("X-Frame-Options", "DENY");
-  if (!h.has("X-Content-Type-Options")) h.set("X-Content-Type-Options", "nosniff");
-  if (!h.has("Referrer-Policy")) h.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  if (!h.has("Permissions-Policy")) {
-    h.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  const result = await next();
+  // TanStack middleware `next()` returns a context object, not a Response.
+  // The actual Response lives on `result.response` (when the handler produced one).
+  const response = (result as { response?: Response })?.response;
+  if (response instanceof Response) {
+    const h = response.headers;
+    if (!h.has("X-Frame-Options")) h.set("X-Frame-Options", "DENY");
+    if (!h.has("X-Content-Type-Options")) h.set("X-Content-Type-Options", "nosniff");
+    if (!h.has("Referrer-Policy")) h.set("Referrer-Policy", "strict-origin-when-cross-origin");
+    if (!h.has("Permissions-Policy")) {
+      h.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+    }
+    if (!h.has("Strict-Transport-Security")) {
+      h.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
   }
-  if (!h.has("Strict-Transport-Security")) {
-    h.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-  }
-  return response;
+  return result;
 });
 
 export const startInstance = createStart(() => ({
