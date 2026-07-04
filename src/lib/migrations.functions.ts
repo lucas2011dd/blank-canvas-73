@@ -232,12 +232,12 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       status: allPhones.length === initialAdded.length ? "completed" : "running",
       started_at: new Date().toISOString(),
       finished_at: allPhones.length === initialAdded.length ? new Date().toISOString() : null,
-      // CORREÇÃO (item 4): quando cria um grupo novo, o primeiro batch NÃO
-      // deve rodar imediatamente. Adicionar mais membros logo após a criação
-      // do grupo é o padrão que mais dispara device_removed no Baileys. Damos
-      // um respiro mínimo (default 60s) antes do próximo add.
-      next_attempt_at: (data.mode === "new_group" && allPhones.length > initialAdded.length)
-        ? new Date(Date.now() + safeNumberAtLeast(process.env.MIGRATION_NEW_GROUP_INITIAL_DELAY_MS, 180_000, 180_000)).toISOString()
+      // CORREÇÃO (item 4, endurecida): o primeiro batch NUNCA roda de imediato.
+      // Vale tanto para new_group (respiro após criação) quanto para
+      // existing_group (evita rajada logo após o insert). Sempre aplicamos o
+      // min_delay configurado (com floor de 60s pelo automationDelaySeconds).
+      next_attempt_at: allPhones.length > initialAdded.length
+        ? new Date(Date.now() + Math.max(60_000, (Number(data.minDelaySeconds) || 60) * 1000)).toISOString()
         : new Date().toISOString(),
     }).select("*").single();
     if (mErr) throw new Error(mErr.message);
