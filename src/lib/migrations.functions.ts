@@ -224,7 +224,7 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       // do grupo é o padrão que mais dispara device_removed no Baileys. Damos
       // um respiro mínimo (default 60s) antes do próximo add.
       next_attempt_at: (data.mode === "new_group" && allPhones.length > initialAdded.length)
-        ? new Date(Date.now() + Number(process.env.MIGRATION_NEW_GROUP_INITIAL_DELAY_MS ?? 60_000)).toISOString()
+        ? new Date(Date.now() + Number(process.env.MIGRATION_NEW_GROUP_INITIAL_DELAY_MS ?? 180_000)).toISOString()
         : new Date().toISOString(),
     }).select("*").single();
     if (mErr) throw new Error(mErr.message);
