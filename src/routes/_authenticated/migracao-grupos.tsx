@@ -15,8 +15,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { listConnections, listWhatsappGroups } from "@/lib/connections.functions";
 import {
   controlGroupMigration, listGroupMigrations, previewGroupParticipants,
-  runGroupMigrationNow, startGroupMigration,
+  runGroupMigrationNow, startGroupMigration, tickMyMigrations,
 } from "@/lib/migrations.functions";
+
 import { BrGeoFilter } from "@/components/br-geo-filter";
 
 const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
