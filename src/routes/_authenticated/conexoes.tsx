@@ -205,7 +205,8 @@ function Page() {
     const t = setInterval(async () => {
       await Promise.all(liveWhatsapp.map((c: any) => refresh({ data: { id: c.id } }).catch(() => null)));
       qc.invalidateQueries({ queryKey: ["connections"] });
-    }, 8000);
+    }, 20000);
+
     return () => clearInterval(t);
   }, [data, qc, refresh]);
 
