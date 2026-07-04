@@ -1,16 +1,18 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { queryOptions, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Suspense, useEffect } from "react";
+import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
+import { Suspense } from "react";
 import { Cable, MessageSquare, Users, Activity, ArrowUpRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { supabase } from "@/integrations/supabase/client";
 import { getDashboardStats } from "@/lib/dashboard.functions";
 
+// Snapshot: refetch em foco (padrão do React Query) já basta.
+// staleTime de 30s evita recarregar a cada micro-navegação entre abas.
 const statsQuery = queryOptions({
   queryKey: ["dashboard-stats"],
   queryFn: () => getDashboardStats(),
+  staleTime: 30_000,
 });
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
@@ -23,17 +25,9 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 });
 
 function Dashboard() {
-  const qc = useQueryClient();
-  useEffect(() => {
-    const invalidate = () => qc.invalidateQueries({ queryKey: ["dashboard-stats"] });
-    const channel = supabase.channel("dashboard-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "connections" }, invalidate)
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, invalidate)
-      .on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, invalidate)
-      .on("postgres_changes", { event: "*", schema: "public", table: "audit_logs" }, invalidate)
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [qc]);
+  // Realtime removido: 4 subscriptions (connections, messages, contacts,
+  // audit_logs) refaziam a agregação a cada evento — custoso e desnecessário
+  // para uma visão geral. O React Query refaz no focus/reentrada.
   return (
     <div className="space-y-6">
       <div>
@@ -44,6 +38,7 @@ function Dashboard() {
     </div>
   );
 }
+
 
 
 function StatsGrid() {

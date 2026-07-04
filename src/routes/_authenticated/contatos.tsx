@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Plus, Search, Trash2, Download, MessageCircle, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,12 +10,14 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
 import { createContact, deleteContact, listContacts } from "@/lib/contacts.functions";
 import { listConnections } from "@/lib/connections.functions";
 import { exportContactsToGoogle } from "@/lib/google.functions";
 
-const q = queryOptions({ queryKey: ["contacts"], queryFn: () => listContacts({ data: {} }) });
+// staleTime alto: contatos raramente mudam fora das mutações desta tela,
+// que já disparam invalidateQueries. Evita refetch da lista inteira ao
+// navegar entre abas.
+const q = queryOptions({ queryKey: ["contacts"], queryFn: () => listContacts({ data: {} }), staleTime: 60_000 });
 const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
 
 export const Route = createFileRoute("/_authenticated/contatos")({
@@ -39,14 +41,9 @@ function Page() {
 
   const whatsapps = connections.filter((c: any) => c.provider === "whatsapp");
 
-  useEffect(() => {
-    const channel = supabase.channel("contacts-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, () => {
-        qc.invalidateQueries({ queryKey: ["contacts"] });
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [qc]);
+  // Realtime removido: mutações locais já invalidam a lista e o canal
+  // adicionava overhead constante para uma tabela que muda pouco.
+
 
   function openWhatsapp(phone: string) {
     const clean = phone.replace(/\D/g, "");

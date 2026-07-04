@@ -20,14 +20,19 @@ import { BrGeoFilter } from "@/components/br-geo-filter";
 
 const bcQ = queryOptions({ queryKey: ["broadcasts"], queryFn: () => listBroadcasts() });
 const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
-const contactsQ = queryOptions({ queryKey: ["contacts", ""], queryFn: () => listContacts({ data: {} }) });
+// Contatos podem ser milhares — carregamos sob demanda ao abrir o diálogo de
+// novo disparo, não no load da rota.
+const contactsQ = queryOptions({
+  queryKey: ["contacts"],
+  queryFn: () => listContacts({ data: {} }),
+  staleTime: 60_000,
+});
 
 export const Route = createFileRoute("/_authenticated/broadcasts")({
   head: () => ({ meta: [{ title: "Disparos — ConnectHub" }] }),
   loader: ({ context }) => Promise.all([
     context.queryClient.ensureQueryData(bcQ),
     context.queryClient.ensureQueryData(connQ),
-    context.queryClient.ensureQueryData(contactsQ),
   ]),
   component: BroadcastsPage,
   errorComponent: ({ error }) => <div className="text-destructive">Erro: {error.message}</div>,
@@ -38,8 +43,10 @@ function BroadcastsPage() {
   const qc = useQueryClient();
   const { data: broadcasts } = useSuspenseQuery(bcQ);
   const { data: connections } = useSuspenseQuery(connQ);
-  const { data: contacts } = useSuspenseQuery(contactsQ);
   const [open, setOpen] = useState(false);
+  const contactsLazy = useQuery({ ...contactsQ, enabled: open });
+  const contacts = contactsLazy.data ?? [];
+
 
   useEffect(() => {
     const ch = supabase.channel("bc-rt")
