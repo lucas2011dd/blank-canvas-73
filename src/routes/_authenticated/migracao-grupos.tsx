@@ -157,11 +157,8 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
   const [targetSubject, setTargetSubject] = useState("");
   const [targetJid, setTargetJid] = useState("");
   const [batchSize, setBatchSize] = useState(1);
-  // CORREÇÃO: Defaults de delay aumentados para 25s/60s.
-  // Valores abaixo de 20s causam device_removed no WhatsApp ao adicionar
-  // membros em grupos. O WhatsApp interpreta intervalos curtos como spam.
-  const [minDelay, setMinDelay] = useState(60);
-  const [maxDelay, setMaxDelay] = useState(180);
+  const [minDelay, setMinDelay] = useState(180);
+  const [maxDelay, setMaxDelay] = useState(300);
 
   const [skipAdmins, setSkipAdmins] = useState(true);
   const [skipSelf, setSkipSelf] = useState(true);
@@ -253,21 +250,21 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
             <Label className="text-xs">Delay min (s)</Label>
             <Input
               type="number"
-              min={60}
+              min={180}
               value={minDelay}
-              onChange={(e) => setMinDelay(Math.max(60, Number(e.target.value) || 60))}
+              onChange={(e) => setMinDelay(Math.max(180, Number(e.target.value) || 180))}
             />
-            <p className="text-[10px] text-muted-foreground mt-1">mínimo permitido: 60s (valores abaixo são elevados no servidor)</p>
+            <p className="text-[10px] text-muted-foreground mt-1">mínimo permitido: 180s</p>
           </div>
           <div>
             <Label className="text-xs">Delay max (s)</Label>
             <Input
               type="number"
-              min={180}
+              min={300}
               value={maxDelay}
-              onChange={(e) => setMaxDelay(Math.max(180, Number(e.target.value) || 180))}
+              onChange={(e) => setMaxDelay(Math.max(300, Number(e.target.value) || 300))}
             />
-            <p className="text-[10px] text-muted-foreground mt-1">mínimo permitido: 180s (valores abaixo são elevados no servidor)</p>
+            <p className="text-[10px] text-muted-foreground mt-1">mínimo permitido: 300s</p>
           </div>
         </div>
 
@@ -298,7 +295,7 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
         <p className="text-xs text-muted-foreground">
           O processamento automático deve rodar pelo cron externo; o painel não dispara batches em loop para não sobrecarregar a Evolution.
           Adiciona com ritmo seguro: 1 contato por chamada real, delay {minDelay}–{maxDelay}s entre cada adição.
-          <b> Recomendado: mínimo 60s, máximo 180s</b> para evitar que o WhatsApp detecte como spam e desconecte a sessão.
+          <b> Recomendado: mínimo 180s, máximo 300s</b> para VPS 2 vCPU/4GB e evitar picos na Evolution.
         </p>
       </div>
       <DialogFooter>
