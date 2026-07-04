@@ -59,7 +59,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         // `disconnected_manually=false` — só um "Desconectar" manual do
         // usuário interrompe a reconexão automática.
         const { data: webhookConns } = await supabaseAdmin.from("connections")
-          .select("id,status,metadata,disconnected_manually,auto_reconnect")
+          .select("id,user_id,status,metadata,disconnected_manually,auto_reconnect")
           .eq("provider", "whatsapp")
           .or("status.eq.online,status.eq.connecting,and(status.eq.offline,disconnected_manually.eq.false,auto_reconnect.eq.true)")
           .limit(40);
