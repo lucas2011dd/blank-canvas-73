@@ -386,7 +386,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   const lastAddedAt = (mig.metadata as any)?.last_batch_at
     ? new Date((mig.metadata as any).last_batch_at).getTime()
     : 0;
-  const minIntervalMs = Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 5_000);
+  const minIntervalMs = Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 15_000);
   const elapsed = Date.now() - lastAddedAt;
   if (elapsed < minIntervalMs) {
     await new Promise((r) => setTimeout(r, minIntervalMs - elapsed));
