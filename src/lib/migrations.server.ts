@@ -75,16 +75,35 @@ function isLoggedOutEvolutionError(error: unknown): boolean {
   );
 }
 
-function pairingLostSignal(conn: any, state?: any): boolean {
-  const meta = conn?.metadata ?? {};
-  const reason = meta.status_reason ?? meta.disconnectionReasonCode ?? state?.instance?.statusReason ?? state?.statusReason;
-  const haystack = JSON.stringify({ meta, state }).toLowerCase();
+function pairingLostSignal(_conn: any, state?: any): boolean {
+  // IMPORTANTE: NÃO varrer conn.metadata aqui. markConnectionReauthRequired
+  // grava breadcrumbs (`pairing_lost_reason: "device_removed"`, `status_reason: 401`,
+  // `device_removed_at`) que ficam no metadata mesmo após reconexão bem-sucedida.
+  // Se olharmos o metadata, o próximo tick lê o rastro antigo e re-pausa tudo
+  // logo após o primeiro batch. Confia SÓ no estado vivo retornado por
+  // evolution.state() nesta chamada.
+  if (!state) return false;
+  const reason =
+    state?.instance?.statusReason ??
+    state?.statusReason ??
+    state?.data?.statusReason ??
+    state?.data?.instance?.statusReason;
+  if (reason === 401 || String(reason) === "401") return true;
+  const stateField = String(
+    state?.instance?.state ??
+    state?.instance?.status ??
+    state?.data?.state ??
+    state?.data?.status ??
+    state?.state ??
+    state?.status ??
+    "",
+  ).toLowerCase();
   return (
-    reason === 401 ||
-    String(reason) === "401" ||
-    haystack.includes("device_removed") ||
-    haystack.includes("logged out") ||
-    haystack.includes("logout")
+    stateField.includes("device_removed") ||
+    stateField.includes("logged_out") ||
+    stateField.includes("logged out") ||
+    stateField === "logout" ||
+    stateField.includes("unpaired")
   );
 }
 
