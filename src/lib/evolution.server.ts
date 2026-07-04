@@ -1,288 +1,61 @@
-// Cliente HTTP mínimo para a Evolution API v2.
-// Só é importado dentro de handlers de server functions / server routes.
-import qrGen from "qrcode-generator";
+// Cliente Evolution API v2 — camada de orquestração.
+// Transporte, parsing de QR e normalização de estado vivem em src/lib/evolution/*.
+// Este arquivo é o barrel: preserva 100% da API pública original
+// (evolution, extractQrImage, extractEvolutionConnectionState, ...).
+import {
+  evolutionCall as call,
+  evolutionEnv as env,
+  stableSettings,
+  webhookConfig,
+} from "./evolution/http.server";
+import {
+  extractEvolutionConnectionState,
+  evolutionStateToStatus,
+  isPairingLostEvolutionState,
+  payloadIndicatesPairingLost,
+  type EvolutionConnectionStatus,
+} from "./evolution/state.server";
 
-const QR_IMAGE_KEYS = new Set([
-  "base64",
-  "qr",
-  "qrcode",
-  "qrCode",
-  "qr_code",
-  "image",
-  "src",
-]);
+// Re-exports públicos (compatibilidade total com imports existentes).
+export { extractQrImage } from "./evolution/qr.server";
+export {
+  extractEvolutionConnectionState,
+  extractEvolutionErrorCode,
+  evolutionStateToStatus,
+  isPairingLostEvolutionError,
+  isPairingLostEvolutionState,
+  isTransientEvolutionError,
+  payloadIndicatesPairingLost,
+  type EvolutionConnectionStatus,
+} from "./evolution/state.server";
 
-const QR_TEXT_KEYS = new Set([
-  "code",
-  "pairingCode",
-  "pairing_code",
-  "text",
-]);
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function qrToSvgDataUrl(text: string): string {
-  const qr = qrGen(0, "M");
-  qr.addData(text);
-  qr.make();
-  const count = qr.getModuleCount();
-  const cell = 8;
-  const margin = 16;
-  const size = count * cell + margin * 2;
-  let rects = "";
-  for (let r = 0; r < count; r++) {
-    for (let c = 0; c < count; c++) {
-      if (qr.isDark(r, c)) {
-        rects += `<rect x="${margin + c * cell}" y="${margin + r * cell}" width="${cell}" height="${cell}"/>`;
-      }
-    }
-  }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">${rects}</g></svg>`;
-  const b64 = typeof btoa === "function" ? btoa(svg) : Buffer.from(svg, "utf-8").toString("base64");
-  return `data:image/svg+xml;base64,${b64}`;
+/** Extrai o nome canônico de uma linha de /instance/fetchInstances. */
+function instanceRowName(row: any): string | undefined {
+  return row?.name ?? row?.instanceName ?? row?.instance?.instanceName ?? row?.instance?.name;
 }
 
-function looksLikeImageBase64(value: string): boolean {
-  const compact = value.replace(/\s/g, "");
-  return (
-    compact.startsWith("iVBORw0KGgo") ||
-    compact.startsWith("/9j/") ||
-    compact.startsWith("R0lGOD") ||
-    compact.startsWith("PHN2Zy") ||
-    compact.length > 800
-  ) && /^[A-Za-z0-9+/]+=*$/.test(compact);
-}
-
-function normalizeQrImage(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-
-  if (trimmed.startsWith("data:image/")) return trimmed;
-  if (trimmed.startsWith("<svg")) {
-    const b64 = typeof btoa === "function"
-      ? btoa(trimmed)
-      : Buffer.from(trimmed, "utf-8").toString("base64");
-    return `data:image/svg+xml;base64,${b64}`;
-  }
-  if (looksLikeImageBase64(trimmed)) {
-    const compact = trimmed.replace(/\s/g, "");
-    const mime = compact.startsWith("PHN2Zy") ? "image/svg+xml" : "image/png";
-    return `data:${mime};base64,${compact}`;
-  }
-  return null;
-}
-
-function collectQrCandidates(source: unknown) {
-  const images: string[] = [];
-  const codes: string[] = [];
-  const seen = new Set<unknown>();
-
-  function walk(value: unknown, keyHint = "") {
-    if (value == null) return;
-    if (typeof value === "string") {
-      const normalized = normalizeQrImage(value);
-      if (normalized && (!keyHint || QR_IMAGE_KEYS.has(keyHint))) images.push(normalized);
-      else if (QR_TEXT_KEYS.has(keyHint) || /qr|code/i.test(keyHint)) codes.push(value.trim());
-      return;
-    }
-    if (typeof value !== "object" || seen.has(value)) return;
-    seen.add(value);
-    if (Array.isArray(value)) {
-      value.forEach((item) => walk(item, keyHint));
-      return;
-    }
-    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      walk(child, key);
-    }
-  }
-
-  walk(source);
-  return { images, codes: codes.filter(Boolean) };
-}
-
-function env() {
-  const base = process.env.EVOLUTION_API_URL;
-  const key = process.env.EVOLUTION_API_KEY;
-  if (!base || !key) throw new Error("EVOLUTION_API_URL/EVOLUTION_API_KEY não configurados");
-  return { base: base.replace(/\/$/, ""), key };
-}
-
-function webhookAuthHeaders(key: string) {
-  const secret = process.env.EVOLUTION_WEBHOOK_SECRET ?? key;
-  return {
-    apikey: secret,
-    "x-evolution-webhook-secret": secret,
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ConnectHub-Webhook/1.0",
-    Accept: "application/json, text/plain, */*",
-  };
-}
-
-function webhookConfig(url: string, key: string) {
-  const events = [
-    "MESSAGES_UPSERT",
-    "CONNECTION_UPDATE",
-    "QRCODE_UPDATED",
-  ];
-  return {
-    enabled: true,
-    url,
-    // Filtra na origem. Com byEvents=false algumas instalações da Evolution
-    // enviam dumps grandes (contacts/chats/presence) mesmo com `events` setado,
-    // o que sobrecarrega a VPS e atrasa os eventos críticos de QR/status.
-    byEvents: true,
-    base64: false,
-    webhook_by_events: true,
-    webhook_base64: false,
-    events,
-    headers: webhookAuthHeaders(key),
-  };
-}
-
-function stableSettings() {
-  return {
-    rejectCall: false,
-    msgCall: "",
-    groupsIgnore: false,
-    // Evita presença permanente e tráfego desnecessário no Baileys/Evolution.
-    // O app depende de webhooks/status explícitos, não de manter presença online.
-    alwaysOnline: false,
-    readMessages: false,
-    readStatus: false,
-    // Full-history do Baileys costuma gerar cargas enormes logo após o QR e
-    // aumenta risco de timeout/queda. A sincronização do ConnectHub é feita
-    // por endpoints leves (contatos/chats/grupos) depois que a sessão abre.
-    syncFullHistory: false,
-  };
-}
-
-function urlCandidates(base: string, path: string) {
-  const primary = `${base}${path}`;
-  const candidates: string[] = [];
-  const add = (url: string) => {
-    if (!candidates.includes(url)) candidates.push(url);
-  };
-  // SEGURANÇA (item 3): nunca rebaixar https→http. Se a URL original for
-  // HTTPS, todos os candidatos permanecem HTTPS — do contrário a apikey
-  // da Evolution seria enviada em texto puro pela rede, e o endpoint
-  // ficaria cacheado em EVOLUTION_WORKING_BASE como preferido para as
-  // próximas chamadas. Se todas as tentativas HTTPS falharem, propagamos
-  // o erro para o usuário em vez de tentar HTTP silenciosamente.
-  let primaryIsHttps = false;
-  try { primaryIsHttps = new URL(primary).protocol === "https:"; } catch { /* noop */ }
-
-  const cachedBase = EVOLUTION_WORKING_BASE.get(base);
-  if (cachedBase) {
-    try {
-      const cachedProto = new URL(cachedBase).protocol;
-      if (!(primaryIsHttps && cachedProto !== "https:")) {
-        add(`${cachedBase}${path}`);
-      }
-    } catch { /* ignora cache inválido */ }
-  }
-  add(primary);
-  try {
-    const url = new URL(primary);
-    const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname);
-    if (isIp) {
-      // Alias sslip.io preserva SEMPRE o protocolo original — nunca força HTTP.
-      const alias = new URL(url.toString());
-      alias.hostname = `${url.hostname.replace(/\./g, "-")}.sslip.io`;
-      add(alias.toString());
-    }
-  } catch { /* mantém URL original */ }
-  return candidates;
-}
-
-const EVOLUTION_WORKING_BASE: Map<string, string> = (globalThis as any).__evolutionWorkingBase ??= new Map();
-
-async function call<T = any>(
+/** Tenta múltiplos verbos HTTP para endpoints "destrutivos" (restart/logout/remove). */
+async function tryMethods<T>(
   path: string,
-  init: { method?: string; body?: unknown; timeoutMs?: number } = {},
+  methods: ReadonlyArray<"POST" | "PUT" | "GET" | "DELETE">,
+  timeoutMs = 5_000,
+  errMsg = "Falha na chamada",
 ): Promise<T> {
-  const { base, key } = env();
-  let lastError: Error | null = null;
-  const timeoutMs = init.timeoutMs ?? 10_000;
-
-  for (const url of urlCandidates(base, path)) {
-    let res: Response;
+  let lastError: unknown = null;
+  for (const method of methods) {
     try {
-      res = await fetch(url, {
-        method: init.method ?? "GET",
-        headers: {
-          apikey: key,
-          "Content-Type": "application/json",
-        },
-        body: init.body ? JSON.stringify(init.body) : undefined,
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-    } catch (e: any) {
-      lastError = new Error(e?.name === "TimeoutError" || e?.name === "AbortError"
-        ? `Timeout Evolution API (${timeoutMs}ms) em ${path}`
-        : String(e?.message ?? e));
-      continue;
+      return await call<T>(path, { method, timeoutMs });
+    } catch (error) {
+      lastError = error;
     }
-    const text = await res.text();
-    let json: any = null;
-    try { json = text ? JSON.parse(text) : null; } catch { /* pass */ }
-    if (res.ok) {
-      try { EVOLUTION_WORKING_BASE.set(base, new URL(url).origin); } catch { /* noop */ }
-      return json as T;
-    }
-
-    const rawMsg = json?.response?.message ?? json?.message ?? text ?? `HTTP ${res.status}`;
-    const msg = Array.isArray(rawMsg) ? rawMsg.map(String).join(" — ") : rawMsg;
-    lastError = new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
-    (lastError as any).status = res.status;
-    (lastError as any).statusCode = res.status;
-    (lastError as any).body = json ?? text;
   }
-
-  throw lastError ?? new Error("Falha ao chamar Evolution API");
-}
-
-function pickString(source: unknown, paths: string[][]): string | null {
-  for (const path of paths) {
-    let current: any = source;
-    for (const key of path) current = current?.[key];
-    if (typeof current === "string" && current.trim()) return current.trim();
-  }
-  return null;
-}
-
-export async function extractQrImage(source: unknown): Promise<string | null> {
-  const collected = collectQrCandidates(source);
-  if (collected.images[0]) return collected.images[0];
-
-  const base64 = pickString(source, [
-    ["base64"],
-    ["qrcode", "base64"],
-    ["qr", "base64"],
-    ["data", "base64"],
-    ["data", "qrcode", "base64"],
-  ]);
-  if (base64) {
-    const normalized = normalizeQrImage(base64);
-    if (normalized) return normalized;
-  }
-
-  const collectedCode = collected.codes[0];
-  if (collectedCode) return qrToSvgDataUrl(collectedCode);
-
-  const code = pickString(source, [
-    ["code"],
-    ["qrcode", "code"],
-    ["qr", "code"],
-    ["data", "code"],
-    ["data", "qrcode", "code"],
-  ]);
-  if (!code) return null;
-
-  return qrToSvgDataUrl(code);
+  throw lastError instanceof Error ? lastError : new Error(errMsg);
 }
 
 export const evolution = {
-  async createInstance(
-    instanceName: string,
-    webhookUrl?: string,
-  ): Promise<any> {
+  async createInstance(instanceName: string, webhookUrl?: string): Promise<any> {
     const { key } = env();
     const body: any = {
       instanceName,
@@ -290,29 +63,21 @@ export const evolution = {
       qrcode: true,
       ...stableSettings(),
     };
-    if (webhookUrl) {
-      body.webhook = webhookConfig(webhookUrl, key);
-    }
+    if (webhookUrl) body.webhook = webhookConfig(webhookUrl, key);
     return call("/instance/create", { method: "POST", body });
   },
 
-  async connect(
-    instanceName: string,
-  ): Promise<any> {
+  async connect(instanceName: string): Promise<any> {
     return call(`/instance/connect/${encodeURIComponent(instanceName)}`);
   },
 
   async restart(instanceName: string): Promise<any> {
-    const path = `/instance/restart/${encodeURIComponent(instanceName)}`;
-    let lastError: unknown = null;
-    for (const method of ["POST", "PUT", "GET"] as const) {
-      try {
-        return await call(path, { method, timeoutMs: 5_000 });
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    throw lastError instanceof Error ? lastError : new Error("Falha ao reiniciar sessão WhatsApp");
+    return tryMethods(
+      `/instance/restart/${encodeURIComponent(instanceName)}`,
+      ["POST", "PUT", "GET"],
+      5_000,
+      "Falha ao reiniciar sessão WhatsApp",
+    );
   },
 
   async state(instanceName: string): Promise<any> {
@@ -341,31 +106,21 @@ export const evolution = {
 
   async instanceInfo(instanceName: string): Promise<any | null> {
     const list = await this.fetchInstances();
-    return list.find((row: any) => {
-      const name = row?.name ?? row?.instanceName ?? row?.instance?.instanceName ?? row?.instance?.name;
-      return name === instanceName;
-    }) ?? null;
+    return list.find((row: any) => instanceRowName(row) === instanceName) ?? null;
   },
 
   async instanceInfoStrict(instanceName: string): Promise<any | null> {
     const list = await this.fetchInstancesStrict();
-    return list.find((row: any) => {
-      const name = row?.name ?? row?.instanceName ?? row?.instance?.instanceName ?? row?.instance?.name;
-      return name === instanceName;
-    }) ?? null;
+    return list.find((row: any) => instanceRowName(row) === instanceName) ?? null;
   },
 
   async logout(instanceName: string) {
-    const path = `/instance/logout/${encodeURIComponent(instanceName)}`;
-    let lastError: unknown = null;
-    for (const method of ["DELETE", "POST"] as const) {
-      try {
-        return await call(path, { method, timeoutMs: 5_000 });
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    throw lastError instanceof Error ? lastError : new Error("Falha ao desconectar instância");
+    return tryMethods(
+      `/instance/logout/${encodeURIComponent(instanceName)}`,
+      ["DELETE", "POST"],
+      5_000,
+      "Falha ao desconectar instância",
+    );
   },
 
   async remove(instanceName: string) {
@@ -389,9 +144,8 @@ export const evolution = {
   },
 
   async sendText(instanceName: string, number: string, text: string) {
-    // Exponential backoff em 5xx/515 (recomendação da spec 2026).
-    // Tenta em 2s, 4s, 8s. Erros 4xx (número inválido, sessão morta) NÃO
-    // são retentados aqui — vão para o handler do broadcast/scheduler.
+    // Exponential backoff em 5xx/515. 4xx (número inválido, sessão morta)
+    // não é retentado aqui — sobe para o handler de broadcast/scheduler.
     const delays = [0, 2_000, 4_000, 8_000];
     let lastErr: any;
     for (const wait of delays) {
@@ -474,13 +228,21 @@ export const evolution = {
     ).catch(() => null);
   },
 
-  async groupParticipants(instanceName: string, groupJid: string): Promise<Array<{ id: string; jid?: string; admin?: string }>> {
+  async groupParticipants(
+    instanceName: string,
+    groupJid: string,
+  ): Promise<Array<{ id: string; jid?: string; admin?: string }>> {
     const info = await this.findGroupInfo(instanceName, groupJid);
     const raw = info?.participants ?? info?.data?.participants ?? info?.groupMetadata?.participants ?? [];
     return Array.isArray(raw) ? raw : [];
   },
 
-  async createGroup(instanceName: string, subject: string, participants: string[], description?: string): Promise<any> {
+  async createGroup(
+    instanceName: string,
+    subject: string,
+    participants: string[],
+    description?: string,
+  ): Promise<any> {
     return call<any>(`/group/create/${encodeURIComponent(instanceName)}`, {
       method: "POST",
       body: { subject, description, participants },
@@ -488,20 +250,19 @@ export const evolution = {
   },
 
   async addGroupParticipants(instanceName: string, groupJid: string, participants: string[]): Promise<any> {
-    // CORREÇÃO: Timeout aumentado de 10s para 30s.
-    // A Evolution API pode demorar até 20-25s para processar um addGroupParticipants
-    // quando o WhatsApp precisa verificar o número antes de adicionar.
-    // Com timeout de 10s, a chamada expirava, o Baileys ficava em estado
-    // inconsistente e gerava device_removed na próxima tentativa.
+    // Timeout de 30s: /updateParticipant pode levar 20-25s quando o WhatsApp
+    // valida números antes de adicionar; timeout curto gera device_removed
+    // na próxima tentativa.
     return call<any>(
       `/group/updateParticipant/${encodeURIComponent(instanceName)}?groupJid=${encodeURIComponent(groupJid)}`,
       { method: "POST", body: { action: "add", participants }, timeoutMs: 30_000 },
     );
   },
 
-  // Verifica quais números da lista têm WhatsApp ativo.
-  // Endpoint /chat/whatsappNumbers → devolve array com { jid, exists, number }.
-  async checkWhatsappNumbers(instanceName: string, numbers: string[]): Promise<Array<{ number: string; exists: boolean; jid?: string }>> {
+  async checkWhatsappNumbers(
+    instanceName: string,
+    numbers: string[],
+  ): Promise<Array<{ number: string; exists: boolean; jid?: string }>> {
     if (!numbers?.length) return [];
     const res = await call<any>(
       `/chat/whatsappNumbers/${encodeURIComponent(instanceName)}`,
@@ -515,237 +276,6 @@ export const evolution = {
     }));
   },
 };
-
-/**
- * Extrai um código de erro numérico (ex.: 515, 401, 428) do payload/erro da
- * Evolution API. Usado para registrar em audit_logs qual foi a causa exata
- * da queda — permite diferenciar 515 (Baileys stream:error / pre-keys) de
- * 401 (device_removed) sem precisar ler string livre.
- */
-export function extractEvolutionErrorCode(source: unknown): number | null {
-  const haystack = typeof source === "object" && source !== null
-    ? JSON.stringify(source, Object.getOwnPropertyNames(source))
-    : String(source ?? "");
-  // Códigos mais comuns do Baileys/WhatsApp stream
-  const patterns = [
-    /"code"\s*:\s*"?515"?/,
-    /stream:error[^"]*"?515/i,
-    /\b515\b/,
-    /"statusReason"\s*:\s*"?401"?/i,
-    /"code"\s*:\s*"?401"?/,
-    /\b401\b/,
-    /\b428\b/,
-    /\b408\b/,
-    /\b500\b/,
-    /\b503\b/,
-  ];
-  for (const re of patterns) {
-    const m = haystack.match(re);
-    if (m) {
-      const n = Number(m[0].replace(/\D/g, ""));
-      if (Number.isFinite(n)) return n;
-    }
-  }
-  return null;
-}
-
-export type EvolutionConnectionStatus = "online" | "offline" | "connecting";
-
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function firstString(...values: unknown[]): string | undefined {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
-}
-
-export function extractEvolutionConnectionState(source: unknown): string | undefined {
-  const s: any = source;
-  return firstString(
-    s?.instance?.state,
-    s?.instance?.status,
-    s?.instance?.connectionStatus,
-    s?.data?.instance?.state,
-    s?.data?.instance?.status,
-    s?.data?.state,
-    s?.data?.status,
-    s?.state,
-    s?.status,
-    s?.connection,
-    s?.connectionStatus,
-  );
-}
-
-export function evolutionStateToStatus(state?: string): EvolutionConnectionStatus {
-  const normalized = String(state ?? "").trim().toLowerCase();
-  if (!normalized) return "offline";
-  if (["open", "online", "connected", "authenticated", "ready"].includes(normalized)) return "online";
-  if (
-    [
-      "offline",
-      "disconnected",
-      "logout",
-      "logged_out",
-      "device_removed",
-      "not_connected",
-      "not connected",
-      "not-connect",
-      "notconnect",
-      "unpaired",
-      "unauthorized",
-    ].includes(normalized) ||
-    normalized.includes("not_connected") ||
-    normalized.includes("not connected") ||
-    normalized.includes("unauthoriz") ||
-    normalized.includes("forbidden") ||
-    normalized.includes("401") ||
-    normalized.includes("fail") ||
-    normalized.includes("logged") ||
-    normalized.includes("removed") ||
-    normalized.includes("disconnect")
-  ) return "offline";
-  if (["close", "closed", "stream:error", "stream error"].includes(normalized) || normalized.includes("close")) return "connecting";
-  if (
-    ["connecting", "qr", "qrcode", "pairing"].includes(normalized) ||
-    normalized.includes("connect") ||
-    normalized.includes("qr") ||
-    normalized.includes("pair")
-  ) return "connecting";
-  return "offline";
-}
-
-export function payloadIndicatesPairingLost(source: unknown): boolean {
-  // IMPORTANTE: só considera "pareamento perdido" quando o próprio CAMPO de
-  // estado indica isso. Não pode varrer o payload inteiro porque o
-  // fetchInstances da Evolution v2 devolve a lista de eventos do webhook
-  // (que contém "LOGOUT_INSTANCE") e configs como "alwaysOnline" — isso
-  // gerava falso positivo e forçava offline mesmo com WhatsApp "open".
-  const s: any = source ?? {};
-  const stateField = firstString(
-    s?.instance?.state,
-    s?.instance?.status,
-    s?.instance?.connectionStatus,
-    s?.data?.instance?.state,
-    s?.data?.instance?.status,
-    s?.data?.state,
-    s?.data?.status,
-    s?.state,
-    s?.status,
-    s?.connection,
-    s?.connectionStatus,
-  );
-  const normalized = String(stateField ?? "").toLowerCase();
-  if (
-    normalized === "device_removed" ||
-    normalized === "logged_out" ||
-    normalized === "logged out" ||
-    normalized === "logout" ||
-    normalized === "unpaired" ||
-    normalized.includes("device_removed") ||
-    normalized.includes("logged_out") ||
-    normalized.includes("logged out") ||
-    normalized.includes("unpaired")
-  ) return true;
-
-  const reason = firstString(
-    s?.statusReason,
-    s?.instance?.statusReason,
-    s?.disconnectReason,
-    s?.instance?.disconnectReason,
-  );
-  const normalizedReason = String(reason ?? "").toLowerCase();
-  if (
-    normalizedReason.includes("device_removed") ||
-    normalizedReason.includes("logged_out") ||
-    normalizedReason.includes("logged out") ||
-    normalizedReason.includes("logout") ||
-    normalizedReason.includes("unpaired")
-  ) return true;
-
-  return false;
-}
-
-export function isPairingLostEvolutionState(state: unknown): boolean {
-  const normalized = String(state ?? "").trim().toLowerCase();
-  return (
-    normalized === "device_removed" ||
-    normalized === "logged_out" ||
-    normalized === "logged out" ||
-    normalized === "logout" ||
-    normalized === "unpaired" ||
-    normalized.includes("device_removed") ||
-    normalized.includes("logged_out") ||
-    normalized.includes("logged out") ||
-    normalized.includes("unpaired")
-  );
-}
-
-export function isPairingLostEvolutionError(error: unknown): boolean {
-  const haystack = typeof error === "object" && error !== null
-    ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
-    : String(error ?? "").toLowerCase();
-  // Só classifica como pareamento perdido quando há sinal textual explícito.
-  // Durante addGroupParticipants a Evolution/Baileys pode retornar 401,
-  // unauthorized ou forbidden por fechamento transitório do stream; tratar isso
-  // como logout mata a sessão sem necessidade após o primeiro batch.
-  const explicitPairingLoss =
-    haystack.includes("device_removed") ||
-    haystack.includes("logged_out") ||
-    haystack.includes("logged out") ||
-    haystack.includes("logout") ||
-    haystack.includes("unpaired") ||
-    haystack.includes("pairing_lost") ||
-    haystack.includes("reauth_required");
-
-  return (
-    isPairingLostEvolutionState(haystack) ||
-    explicitPairingLoss
-  );
-}
-
-export function isTransientEvolutionError(error: unknown): boolean {
-  // IMPORTANTE: só device_removed/logged_out/logout/unpaired são perda real de
-  // pareamento. statusReason 401 isolado durante addGroupParticipants pode ser
-  // apenas fechamento transitório do stream Baileys e deve cair em backoff.
-  if (isPairingLostEvolutionError(error)) return false;
-  const haystack = typeof error === "object" && error !== null
-    ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
-    : String(error ?? "").toLowerCase();
-  // Verifica explicitamente que não é um erro de pareamento antes de classificar
-  // como transiente — a verificação acima via isPairingLostEvolutionError pode
-  // não cobrir todas as variações de mensagem da Evolution v2.
-  const isPermanent = (
-    haystack.includes("device_removed") ||
-    haystack.includes("logged_out") ||
-    haystack.includes("logged out") ||
-    haystack.includes("logout") ||
-    haystack.includes("unpaired")
-  );
-  if (isPermanent) return false;
-  return (
-    haystack.includes("515") ||
-    haystack.includes("428") ||
-    haystack.includes("stream:error") ||
-    haystack.includes("stream error") ||
-    haystack.includes("connection closed") ||
-    haystack.includes("connection close") ||
-    haystack.includes("instance is not connected") ||
-    haystack.includes("the instance is not connected") ||
-    haystack.includes("not_connected") ||
-    haystack.includes("not connected") ||
-    haystack.includes("401") ||
-    haystack.includes("unauthoriz") ||
-    haystack.includes("forbidden") ||
-    haystack.includes("timed out") ||
-    haystack.includes("timeout") ||
-    haystack.includes("socket") ||
-    haystack.includes("network") ||
-    haystack.includes("fetch failed") ||
-    haystack.includes("evolution temporariamente") ||
-    haystack.includes("temporarily unavailable")
-  );
-}
 
 export async function resolveEvolutionStatus(instanceName: string): Promise<{
   status: EvolutionConnectionStatus;
@@ -765,9 +295,8 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
     if (statusFromState === "online") return { status: "online", state, usable: true };
   } catch (error) {
     stateError = error;
-    // Não usar /instance/fetchInstances como fallback: em servidores com muitas
-    // instâncias esse endpoint devolve a lista inteira e vira uma das maiores
-    // fontes de sobrecarga. Webhooks + connectionState são a fonte de verdade.
+    // Sem fallback via /instance/fetchInstances: em servidores grandes esse
+    // endpoint devolve a lista inteira e vira fonte de sobrecarga.
   }
   if (stateError && !state) throw stateError;
   if (statusFromState === "connecting") return { status: "connecting", state, usable: false };
@@ -786,9 +315,9 @@ export async function reconnectEvolutionSession(
   if (before?.status === "online") return { ...before, restarted: false };
   if (before && isPairingLostEvolutionState(before.state)) return { ...before, restarted: false };
 
-  // Se nem o probe de estado respondeu, não dispare restart às cegas. Em pico
-  // de latência da Evolution isso multiplicava restarts por tick e podia
-  // derrubar uma sessão que ainda estava viva.
+  // Se nem o probe respondeu, não dispare restart às cegas — em pico de
+  // latência isso multiplicaria restarts por tick e poderia derrubar uma
+  // sessão ainda viva.
   if (!before) {
     let latest: { status: EvolutionConnectionStatus; state?: string; usable: boolean } = {
       status: "connecting",
@@ -803,11 +332,8 @@ export async function reconnectEvolutionSession(
     return { ...latest, restarted: false };
   }
 
-  // Reconexão automática preserva sessão: usa restart/reload. /connect só é
-  // permitido em ação manual, pois em Baileys pode iniciar fluxo de QR.
-  // /instance/restart retorna 400 quando a sessão não está conectada.
-  // Isso é esperado após queda total — ignoramos e deixamos o chamador decidir
-  // se aciona /connect para gerar novo QR.
+  // Reconexão automática usa restart/reload; /connect só em ação manual
+  // (pode iniciar fluxo de QR no Baileys).
   const recheck = await resolveEvolutionStatus(instanceName).catch(() => null);
   if (recheck?.status === "online") return { ...recheck, restarted: false };
 
