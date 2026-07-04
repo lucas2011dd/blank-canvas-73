@@ -265,20 +265,30 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <div>
-            {/* CORREÇÃO: Batch fixo em 1. O servidor já força max=1, mas
-                exibir opção de 2-3 confundia o usuário e podia causar
-                expectativa errada de velocidade. */}
+            {/* CORREÇÃO: Batch fixo em 1. O servidor já força max=1. */}
             <Label className="text-xs">Batch (fixo: 1)</Label>
             <Input type="number" min={1} max={1} value={1} readOnly className="opacity-60 cursor-not-allowed" />
+            <p className="text-[10px] text-muted-foreground mt-1">mínimo: 1 · máximo permitido pelo sistema: 1</p>
           </div>
           <div>
             <Label className="text-xs">Delay min (s)</Label>
-            <Input type="number" min={1} value={minDelay} onChange={(e) => setMinDelay(Math.max(1, Number(e.target.value) || 1))} />
+            <Input
+              type="number"
+              min={25}
+              value={minDelay}
+              onChange={(e) => setMinDelay(Math.max(25, Number(e.target.value) || 25))}
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">mínimo permitido: 25s (valores abaixo são elevados no servidor)</p>
           </div>
           <div>
             <Label className="text-xs">Delay max (s)</Label>
-            <Input type="number" min={1} value={maxDelay} onChange={(e) => setMaxDelay(Math.max(1, Number(e.target.value) || 1))} />
-
+            <Input
+              type="number"
+              min={45}
+              value={maxDelay}
+              onChange={(e) => setMaxDelay(Math.max(45, Number(e.target.value) || 45))}
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">mínimo permitido: 45s (valores abaixo são elevados no servidor)</p>
           </div>
         </div>
 

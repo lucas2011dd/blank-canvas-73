@@ -124,39 +124,40 @@ async function requeueTransientFailures(supabase: any, migrationId: string) {
   return failedRows.length;
 }
 
-// CORREÇÃO: Lock distribuído por migração para evitar que dois ticks
-// simultâneos processem o mesmo batch, o que causava double-add e
-// sobrecarregava o WebSocket da Evolution.
-const MIGRATION_PROCESSING_LOCK: Map<string, number> = (globalThis as any).__migrationProcessingLock ??= new Map();
-const LOCK_TTL_MS = 55_000; // 55s — maior que o budget do tick (25s) para evitar lock eterno
+// CORREÇÃO CRÍTICA (itens 1 e 2):
+// Lock distribuído por CONEXÃO — via UPDATE atômico condicional na coluna
+// connections.processing_until (migration 008_migration_locks.sql). Isso
+// funciona corretamente em qualquer topologia (Lovable serverless com
+// múltiplas réplicas, VPS com PM2 cluster, ou processo único), enquanto o
+// Map em globalThis só protegia dentro do mesmo processo Node.
+// Escopado por connection_id (não por migration_id) porque duas migrações
+// da mesma conexão WhatsApp precisam ir em fila serial — caso contrário
+// ambas chamariam addGroupParticipants na mesma instância simultaneamente,
+// dobrando a taxa real e anulando o delay anti-restrição.
+const LOCK_TTL_MS = 55_000; // 55s > budget do tick (25s), evita lock eterno em crash
 
-function acquireMigrationLock(migrationId: string): boolean {
-  const now = Date.now();
-  const lockedAt = MIGRATION_PROCESSING_LOCK.get(migrationId);
-  if (lockedAt && now - lockedAt < LOCK_TTL_MS) return false;
-  MIGRATION_PROCESSING_LOCK.set(migrationId, now);
-  return true;
+async function acquireConnectionLock(supabase: any, connectionId: string): Promise<boolean> {
+  const nowIso = new Date().toISOString();
+  const until = new Date(Date.now() + LOCK_TTL_MS).toISOString();
+  const { data } = await supabase.from("connections")
+    .update({ processing_until: until })
+    .eq("id", connectionId)
+    .or(`processing_until.is.null,processing_until.lt.${nowIso}`)
+    .select("id")
+    .maybeSingle();
+  return !!data;
 }
 
-function releaseMigrationLock(migrationId: string): void {
-  MIGRATION_PROCESSING_LOCK.delete(migrationId);
+async function releaseConnectionLock(supabase: any, connectionId: string): Promise<void> {
+  try {
+    await supabase.from("connections")
+      .update({ processing_until: null })
+      .eq("id", connectionId);
+  } catch { /* best-effort */ }
 }
 
 export async function processGroupMigrationBatch(supabase: any, migrationId: string, userIdScope?: string) {
-  // CORREÇÃO: Adquire lock antes de qualquer operação para evitar
-  // processamento concorrente do mesmo batch entre ticks sobrepostos.
-  if (!acquireMigrationLock(migrationId)) {
-    return { migrationId, skipped: true, reason: "locked_by_concurrent_tick" };
-  }
-
-  try {
-    return await _processGroupMigrationBatchInner(supabase, migrationId, userIdScope);
-  } finally {
-    releaseMigrationLock(migrationId);
-  }
-}
-
-async function _processGroupMigrationBatchInner(supabase: any, migrationId: string, userIdScope?: string) {
+  // Precisamos do connection_id antes de pegar a trava — carrega a migração primeiro.
   let q = supabase.from("group_migrations").select("*").eq("id", migrationId);
   if (userIdScope) q = q.eq("user_id", userIdScope);
   const { data: mig } = await q.maybeSingle();
@@ -166,12 +167,28 @@ async function _processGroupMigrationBatchInner(supabase: any, migrationId: stri
   }
   if (!mig.target_group_jid) throw new Error("Grupo destino ausente");
 
+  const gotLock = await acquireConnectionLock(supabase, mig.connection_id);
+  if (!gotLock) {
+    return { migrationId, skipped: true, reason: "locked_by_concurrent_process" };
+  }
+
+  try {
+    return await _processGroupMigrationBatchInner(supabase, mig);
+  } finally {
+    await releaseConnectionLock(supabase, mig.connection_id);
+  }
+}
+
+async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
+  const migrationId = mig.id;
+
+
   // Escopa o lookup de conexão pelo user_id da migração, mesmo usando o
   // admin client — evita que uma migração forjada aponte para a conexão de
   // outro usuário.
   const { data: conn } = await supabase
     .from("connections")
-    .select("status,metadata,user_id")
+    .select("status,metadata,user_id,last_reconnect_attempt_at")
     .eq("id", mig.connection_id)
     .eq("user_id", mig.user_id)
     .maybeSingle();
@@ -179,14 +196,15 @@ async function _processGroupMigrationBatchInner(supabase: any, migrationId: stri
   const instance = conn.metadata?.evolution_instance ?? instanceNameFor(mig.connection_id);
 
   const tryReconnect = async () => {
-    // CORREÇÃO: Cooldown aumentado de 5min para 10min.
-    // Reconexões frequentes são interpretadas pelo WhatsApp como comportamento
-    // suspeito. O Baileys precisa de tempo para estabilizar após uma queda.
+    // CORREÇÃO (item 2): cooldown por CONEXÃO persistido no banco em
+    // connections.last_reconnect_attempt_at — antes era um Map em globalThis
+    // que não protegia entre processos/réplicas. Cooldown 10min por padrão.
     const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 10 * 60_000);
-    const cache: Map<string, number> = ((globalThis as any).__migrationReconnectAt ??= new Map());
-    const last = cache.get(instance) ?? 0;
-    if (Date.now() - last < cooldownMs) return false;
-    cache.set(instance, Date.now());
+    const last = conn.last_reconnect_attempt_at ? Date.parse(conn.last_reconnect_attempt_at) : 0;
+    if (last && Date.now() - last < cooldownMs) return false;
+    await supabase.from("connections")
+      .update({ last_reconnect_attempt_at: new Date().toISOString() })
+      .eq("id", mig.connection_id).eq("user_id", mig.user_id);
     // Reconecta preservando a sessão: restart/reload da instância, nunca /connect.
     const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 2_000 }).catch(() => null);
     if (recovered) {
@@ -413,19 +431,41 @@ async function _processGroupMigrationBatchInner(supabase: any, migrationId: stri
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, reauthRequired: true, message: REAUTH_REQUIRED_MESSAGE };
     }
     if (isTransientEvolutionError(e)) {
-      // CORREÇÃO: Não tentar reconectar imediatamente após erro transiente
-      // durante o add. O Baileys precisa de tempo para se recuperar.
-      // Apenas agenda retry com delay maior e mantém o lote pendente.
-      const retryDelayMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_MS ?? 30_000);
+      // CORREÇÃO (item 6): backoff EXPONENCIAL para falhas transientes.
+      // Antes: delay fixo (30s) independente de quantas falhas seguidas.
+      // Agora: 30s → 60s → 120s → 240s (teto 5min), com contador em
+      // metadata.consecutive_transient_failures. É resetado para 0 no
+      // update final quando o batch tem sucesso (bloco abaixo).
+      const baseMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_MS ?? 30_000);
+      const capMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_CAP_MS ?? 300_000);
+      const consecutive = Number((mig.metadata as any)?.consecutive_transient_failures ?? 0);
+      const retryDelayMs = Math.min(baseMs * (2 ** consecutive), capMs);
+      const nextConsecutive = consecutive + 1;
       await supabase.from("group_migrations").update({
         failed_count: effectiveFailedCount,
         next_attempt_at: new Date(Date.now() + retryDelayMs).toISOString(),
-        last_error: `Conexão instável durante adição — retry automático em ${Math.round(retryDelayMs / 1000)}s, lote mantido pendente`,
+        last_error: `Conexão instável durante adição — retry automático em ${Math.round(retryDelayMs / 1000)}s (falha ${nextConsecutive}, backoff exponencial)`,
         metadata: {
           ...((mig.metadata as Record<string, unknown>) ?? {}),
           last_batch_at: new Date().toISOString(),
+          consecutive_transient_failures: nextConsecutive,
+          last_transient_failure_at: new Date().toISOString(),
         },
       }).eq("id", mig.id);
+      // Log de auditoria para acompanhar o padrão de falhas transientes.
+      try {
+        await supabase.from("audit_logs").insert({
+          user_id: mig.user_id,
+          action: "migration_transient_backoff",
+          entity: "group_migration",
+          entity_id: mig.id,
+          metadata: {
+            consecutive_failures: nextConsecutive,
+            retry_delay_ms: retryDelayMs,
+            error: String(e?.message ?? e),
+          },
+        });
+      } catch { /* audit best-effort */ }
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true };
     }
     for (const t of batch) {
@@ -441,6 +481,16 @@ async function _processGroupMigrationBatchInner(supabase: any, migrationId: stri
   const totalDone = (mig.added_count ?? 0) + added + effectiveFailedCount + failed + (mig.skipped_count ?? 0) + skipped;
   const done = totalDone >= (mig.total ?? 0);
 
+  // Se o batch conseguiu adicionar/skippar alguém, resetamos o contador de
+  // falhas transientes consecutivas (item 6).
+  const hadProgress = added > 0 || skipped > 0;
+  const prevMeta = (mig.metadata as Record<string, unknown>) ?? {};
+  const nextMeta: Record<string, unknown> = {
+    ...prevMeta,
+    last_batch_at: new Date().toISOString(),
+  };
+  if (hadProgress) nextMeta.consecutive_transient_failures = 0;
+
   await supabase.from("group_migrations").update({
     status: done ? "completed" : "running",
     added_count: (mig.added_count ?? 0) + added,
@@ -449,12 +499,7 @@ async function _processGroupMigrationBatchInner(supabase: any, migrationId: stri
     next_attempt_at: done ? null : nextAt,
     finished_at: done ? new Date().toISOString() : null,
     last_error: Object.keys(errors).length ? Object.values(errors)[0] : null,
-    // CORREÇÃO: Registra timestamp do último batch em metadata para controle
-    // de intervalo mínimo entre adds (sem precisar de nova coluna no banco).
-    metadata: {
-      ...((mig.metadata as Record<string, unknown>) ?? {}),
-      last_batch_at: new Date().toISOString(),
-    },
+    metadata: nextMeta,
   }).eq("id", mig.id);
 
   return { migrationId, added, failed, skipped, done };
