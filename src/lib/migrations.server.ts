@@ -182,15 +182,6 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
 async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   const migrationId = mig.id;
 
-async function _processGroupMigrationBatchInner(supabase: any, migrationId: string, userIdScope?: string) {
-  let q = supabase.from("group_migrations").select("*").eq("id", migrationId);
-  if (userIdScope) q = q.eq("user_id", userIdScope);
-  const { data: mig } = await q.maybeSingle();
-  if (!mig) throw new Error("Migração não encontrada");
-  if (mig.status !== "running" && mig.status !== "pending") {
-    return { migrationId, skipped: true, reason: `status=${mig.status}` };
-  }
-  if (!mig.target_group_jid) throw new Error("Grupo destino ausente");
 
   // Escopa o lookup de conexão pelo user_id da migração, mesmo usando o
   // admin client — evita que uma migração forjada aponte para a conexão de
