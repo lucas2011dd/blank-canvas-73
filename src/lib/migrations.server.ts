@@ -124,37 +124,63 @@ async function requeueTransientFailures(supabase: any, migrationId: string) {
   return failedRows.length;
 }
 
-// CORREÇÃO: Lock distribuído por migração para evitar que dois ticks
-// simultâneos processem o mesmo batch, o que causava double-add e
-// sobrecarregava o WebSocket da Evolution.
-const MIGRATION_PROCESSING_LOCK: Map<string, number> = (globalThis as any).__migrationProcessingLock ??= new Map();
-const LOCK_TTL_MS = 55_000; // 55s — maior que o budget do tick (25s) para evitar lock eterno
+// CORREÇÃO CRÍTICA (itens 1 e 2):
+// Lock distribuído por CONEXÃO — via UPDATE atômico condicional na coluna
+// connections.processing_until (migration 008_migration_locks.sql). Isso
+// funciona corretamente em qualquer topologia (Lovable serverless com
+// múltiplas réplicas, VPS com PM2 cluster, ou processo único), enquanto o
+// Map em globalThis só protegia dentro do mesmo processo Node.
+// Escopado por connection_id (não por migration_id) porque duas migrações
+// da mesma conexão WhatsApp precisam ir em fila serial — caso contrário
+// ambas chamariam addGroupParticipants na mesma instância simultaneamente,
+// dobrando a taxa real e anulando o delay anti-restrição.
+const LOCK_TTL_MS = 55_000; // 55s > budget do tick (25s), evita lock eterno em crash
 
-function acquireMigrationLock(migrationId: string): boolean {
-  const now = Date.now();
-  const lockedAt = MIGRATION_PROCESSING_LOCK.get(migrationId);
-  if (lockedAt && now - lockedAt < LOCK_TTL_MS) return false;
-  MIGRATION_PROCESSING_LOCK.set(migrationId, now);
-  return true;
+async function acquireConnectionLock(supabase: any, connectionId: string): Promise<boolean> {
+  const nowIso = new Date().toISOString();
+  const until = new Date(Date.now() + LOCK_TTL_MS).toISOString();
+  const { data } = await supabase.from("connections")
+    .update({ processing_until: until })
+    .eq("id", connectionId)
+    .or(`processing_until.is.null,processing_until.lt.${nowIso}`)
+    .select("id")
+    .maybeSingle();
+  return !!data;
 }
 
-function releaseMigrationLock(migrationId: string): void {
-  MIGRATION_PROCESSING_LOCK.delete(migrationId);
+async function releaseConnectionLock(supabase: any, connectionId: string): Promise<void> {
+  try {
+    await supabase.from("connections")
+      .update({ processing_until: null })
+      .eq("id", connectionId);
+  } catch { /* best-effort */ }
 }
 
 export async function processGroupMigrationBatch(supabase: any, migrationId: string, userIdScope?: string) {
-  // CORREÇÃO: Adquire lock antes de qualquer operação para evitar
-  // processamento concorrente do mesmo batch entre ticks sobrepostos.
-  if (!acquireMigrationLock(migrationId)) {
-    return { migrationId, skipped: true, reason: "locked_by_concurrent_tick" };
+  // Precisamos do connection_id antes de pegar a trava — carrega a migração primeiro.
+  let q = supabase.from("group_migrations").select("*").eq("id", migrationId);
+  if (userIdScope) q = q.eq("user_id", userIdScope);
+  const { data: mig } = await q.maybeSingle();
+  if (!mig) throw new Error("Migração não encontrada");
+  if (mig.status !== "running" && mig.status !== "pending") {
+    return { migrationId, skipped: true, reason: `status=${mig.status}` };
+  }
+  if (!mig.target_group_jid) throw new Error("Grupo destino ausente");
+
+  const gotLock = await acquireConnectionLock(supabase, mig.connection_id);
+  if (!gotLock) {
+    return { migrationId, skipped: true, reason: "locked_by_concurrent_process" };
   }
 
   try {
-    return await _processGroupMigrationBatchInner(supabase, migrationId, userIdScope);
+    return await _processGroupMigrationBatchInner(supabase, mig);
   } finally {
-    releaseMigrationLock(migrationId);
+    await releaseConnectionLock(supabase, mig.connection_id);
   }
 }
+
+async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
+  const migrationId = mig.id;
 
 async function _processGroupMigrationBatchInner(supabase: any, migrationId: string, userIdScope?: string) {
   let q = supabase.from("group_migrations").select("*").eq("id", migrationId);
