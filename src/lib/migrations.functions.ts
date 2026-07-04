@@ -104,7 +104,10 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     targetGroupJid: z.string().optional(),
     targetSubject: z.string().trim().max(120).optional(),
     targetDescription: z.string().trim().max(500).optional(),
-    batchSize: z.number().int().min(1).max(10).default(1),
+    // HARDENING: máx 1 tanto no cliente quanto no servidor. O worker
+    // (automationBatchSize) já força 1 — deixar 10 aqui só engana a UI e
+    // reabre o risco de device_removed se alguém remover o clamp do worker.
+    batchSize: z.number().int().min(1).max(1).default(1),
     // CORREÇÃO: Defaults de delay aumentados de 15/30s para 25/60s.
     // O WhatsApp detecta padrões de adição em grupo muito rápidos como spam
     // e desconecta a sessão com device_removed. Intervalos mais longos
@@ -229,12 +232,12 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       status: allPhones.length === initialAdded.length ? "completed" : "running",
       started_at: new Date().toISOString(),
       finished_at: allPhones.length === initialAdded.length ? new Date().toISOString() : null,
-      // CORREÇÃO (item 4): quando cria um grupo novo, o primeiro batch NÃO
-      // deve rodar imediatamente. Adicionar mais membros logo após a criação
-      // do grupo é o padrão que mais dispara device_removed no Baileys. Damos
-      // um respiro mínimo (default 60s) antes do próximo add.
-      next_attempt_at: (data.mode === "new_group" && allPhones.length > initialAdded.length)
-        ? new Date(Date.now() + safeNumberAtLeast(process.env.MIGRATION_NEW_GROUP_INITIAL_DELAY_MS, 180_000, 180_000)).toISOString()
+      // CORREÇÃO (item 4, endurecida): o primeiro batch NUNCA roda de imediato.
+      // Vale tanto para new_group (respiro após criação) quanto para
+      // existing_group (evita rajada logo após o insert). Sempre aplicamos o
+      // min_delay configurado (com floor de 60s pelo automationDelaySeconds).
+      next_attempt_at: allPhones.length > initialAdded.length
+        ? new Date(Date.now() + Math.max(60_000, (Number(data.minDelaySeconds) || 60) * 1000)).toISOString()
         : new Date().toISOString(),
     }).select("*").single();
     if (mErr) throw new Error(mErr.message);
@@ -270,7 +273,10 @@ export const controlGroupMigration = createServerFn({ method: "POST" })
     if (data.action === "pause") patch.status = "paused";
     if (data.action === "resume") {
       patch.status = "running";
-      patch.next_attempt_at = new Date().toISOString();
+      // HARDENING: ao retomar, também aplicamos delay mínimo (60s) para não
+      // disparar um add imediato após um pause — o pause geralmente vem de
+      // instabilidade de sessão, então precisamos de respiro.
+      patch.next_attempt_at = new Date(Date.now() + 60_000).toISOString();
       patch.last_error = null;
 
       const { data: mig } = await context.supabase.from("group_migrations")
