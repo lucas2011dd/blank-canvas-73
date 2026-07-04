@@ -968,10 +968,18 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
 
     await context.supabase.from("audit_logs").insert({
       user_id: context.userId, action: "sync", entity: "connection", entity_id: data.id,
-      metadata: { contactsUpserted, conversationsUpserted, groupsUpserted, syncContacts, syncChats },
+      metadata: {
+        contactsUpserted, conversationsUpserted, groupsUpserted,
+        contactsFetched: contactsRaw.length, chatsFetched: chatsRaw.length, groupsFetched: groupsRaw.length,
+        syncContacts, syncChats, fetchErrors,
+      },
     });
 
-    return { contactsUpserted, conversationsUpserted, groupsUpserted, syncContacts, syncChats };
+    return {
+      contactsUpserted, conversationsUpserted, groupsUpserted,
+      contactsFetched: contactsRaw.length, chatsFetched: chatsRaw.length, groupsFetched: groupsRaw.length,
+      syncContacts, syncChats, fetchErrors,
+    };
   });
 
 export const listWhatsappGroups = createServerFn({ method: "GET" })
