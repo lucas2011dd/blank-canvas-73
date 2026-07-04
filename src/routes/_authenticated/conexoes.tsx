@@ -146,7 +146,20 @@ function Page() {
   const sync = useMutation({
     mutationFn: useServerFn(syncWhatsappConnection),
     onSuccess: (r: any) => {
-      toast.success(`Sync: ${r.contactsUpserted} contatos, ${r.conversationsUpserted} conversas, ${r.groupsUpserted} grupos`);
+      const parts = [
+        `${r.contactsUpserted ?? 0} contatos novos (de ${r.contactsFetched ?? 0})`,
+        `${r.conversationsUpserted ?? 0} conversas novas (de ${r.chatsFetched ?? 0})`,
+        `${r.groupsUpserted ?? 0} grupos (de ${r.groupsFetched ?? 0})`,
+      ];
+      const errs = r.fetchErrors ?? {};
+      const errList = ["contacts", "chats", "groups"].filter((k) => errs[k]);
+      if (errList.length) {
+        toast.warning(`Sync parcial — ${parts.join(", ")}. Falha em: ${errList.join(", ")}. Aguarde e tente de novo.`);
+      } else if ((r.contactsFetched ?? 0) === 0 && (r.chatsFetched ?? 0) === 0 && (r.groupsFetched ?? 0) === 0) {
+        toast.warning("Sync concluído mas Evolution retornou 0 itens. Verifique se o WhatsApp está realmente pareado (Aparelhos conectados) e tente reconectar.");
+      } else {
+        toast.success(`Sync: ${parts.join(", ")}`);
+      }
       qc.invalidateQueries();
     },
     onError: (e) => toast.error(e.message),
