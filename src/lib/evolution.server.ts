@@ -656,7 +656,7 @@ export function payloadIndicatesPairingLost(source: unknown): boolean {
     s?.disconnectReason,
     s?.instance?.disconnectReason,
   );
-  if (reason && (reason === "401" || reason.includes("401"))) return true;
+  if (reason && (reason.includes("device_removed") || reason.includes("logged_out") || reason.includes("logout") || reason.includes("unpaired"))) return true;
 
   return false;
 }
@@ -720,11 +720,8 @@ export function isTransientEvolutionError(error: unknown): boolean {
     haystack.includes("device_removed") ||
     haystack.includes("logged_out") ||
     haystack.includes("logged out") ||
-    (haystack.includes("stream:error") && haystack.includes("401")) ||
-    haystack.includes("statusreason\":\"401") ||
-    haystack.includes("statusreason:401") ||
-    haystack.includes("status\":\"401") ||
-    haystack.includes("status:401")
+    haystack.includes("logout") ||
+    haystack.includes("unpaired")
   );
   if (isPermanent) return false;
   return (
