@@ -189,6 +189,19 @@ export const pollWhatsappQr = createServerFn({ method: "POST" })
       ? meta.evolution_instance
       : instanceNameFor(data.id);
 
+    const lastQrProbeAt = Date.parse(String(meta.qr_probe_at ?? "")) || 0;
+    const qrProbeCooldownMs = Number(process.env.QR_PROBE_COOLDOWN_MS ?? 15_000);
+    if (lastQrProbeAt && Date.now() - lastQrProbeAt < qrProbeCooldownMs) {
+      return { status: existing.status, qr: null, throttled: true };
+    }
+    const probeMeta = {
+      ...meta,
+      evolution_instance: name,
+      qr_probe_at: new Date().toISOString(),
+    };
+    await context.supabase.from("connections").update({ metadata: probeMeta })
+      .eq("id", data.id).eq("user_id", context.userId);
+
     // 1) Tenta extrair de instanceInfo (não gera novo QR na Evolution).
     let qr: string | null = null;
     const info = await evolution.instanceInfo(name).catch(() => null);
@@ -203,7 +216,7 @@ export const pollWhatsappQr = createServerFn({ method: "POST" })
       qr = await extractQrImage(connected);
       await context.supabase.from("connections").update({
         metadata: {
-          ...meta,
+          ...probeMeta,
           evolution_instance: name,
           qr_connect_requested_at: new Date().toISOString(),
         },
@@ -220,7 +233,7 @@ export const pollWhatsappQr = createServerFn({ method: "POST" })
     await context.supabase.from("connections").update({
       qr_code: qr, status: "connecting",
       last_sync_at: new Date().toISOString(),
-      metadata: { ...meta, evolution_instance: name, evolution_state: "qr_required" },
+      metadata: { ...probeMeta, evolution_instance: name, evolution_state: "qr_required" },
     }).eq("id", data.id).eq("user_id", context.userId);
 
     return { status: "connecting" as const, qr };
