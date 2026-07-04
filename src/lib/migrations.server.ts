@@ -672,7 +672,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     return { migrationId, skipped: true, reason: "rate_limited", nextAttemptAt };
   }
 
-  const requeued = await requeueTransientFailures(supabase, mig.id);
+  const requeued = (mig.failed_count ?? 0) > 0 ? await requeueTransientFailures(supabase, mig.id) : 0;
   const effectiveFailedCount = Math.max(0, (mig.failed_count ?? 0) - requeued);
 
   const effectiveBatchSize = automationBatchSize(mig.batch_size);
