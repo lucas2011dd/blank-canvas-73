@@ -290,23 +290,35 @@ export const tickMyMigrations = createServerFn({ method: "POST" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
     const nowIso = new Date().toISOString();
+    const cooldownIso = new Date(Date.now() - 20_000).toISOString();
     const { data: due } = await supabaseAdmin
       .from("group_migrations")
-      .select("id,connection_id")
+      .select("id,connection_id,metadata")
       .eq("user_id", context.userId)
       .eq("status", "running")
       .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
       .order("next_attempt_at", { ascending: true })
-      .limit(1);
+      .limit(3);
     const results: any[] = [];
     const touchedConnections = new Set<string>();
     for (const m of due ?? []) {
+      const lastAutoTickAt = Date.parse(String((m.metadata as any)?.last_auto_tick_at ?? "")) || 0;
+      if (lastAutoTickAt && new Date(lastAutoTickAt).toISOString() > cooldownIso) {
+        results.push({ migrationId: m.id, skipped: true, reason: "auto_tick_cooldown" });
+        continue;
+      }
       if (m.connection_id && touchedConnections.has(m.connection_id)) {
         results.push({ migrationId: m.id, skipped: true, reason: "same_connection_already_processed_this_tick" });
         continue;
       }
       if (m.connection_id) touchedConnections.add(m.connection_id);
       try {
+        await supabaseAdmin.from("group_migrations").update({
+          metadata: {
+            ...((m.metadata as Record<string, unknown> | null) ?? {}),
+            last_auto_tick_at: new Date().toISOString(),
+          },
+        }).eq("id", m.id);
         results.push(await processGroupMigrationBatch(supabaseAdmin, m.id, context.userId));
       } catch (e: any) {
         results.push({ migrationId: m.id, error: String(e?.message ?? e) });

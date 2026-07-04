@@ -238,7 +238,7 @@ async function releaseConnectionLock(supabase: any, connectionId: string): Promi
 /**
  * Trata queda de sessão durante a migração de forma GRADUAL:
  * antes de pausar tudo e exigir novo QR, tenta restart silencioso até
- * `MIGRATION_MAX_SESSION_DROPS` (default 3) vezes consecutivas, com backoff
+ * `MIGRATION_MAX_SESSION_DROPS` (default 6) vezes consecutivas, com backoff
  * exponencial. Só marca `reauth_required` após esgotar as tentativas.
  *
  * Motivo: Baileys costuma reportar `close`/`statusReason:401` transitório
@@ -344,7 +344,7 @@ async function handleSessionDrop(
   }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
 
   // Backoff exponencial: 30s → 60s → 120s (teto 3min).
-  const baseMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_MS ?? 30_000);
+  const baseMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_MS ?? 60_000);
   const capMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_CAP_MS ?? 180_000);
   const backoffMs = Math.min(baseMs * (2 ** (failCount - 1)), capMs);
 

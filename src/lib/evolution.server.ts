@@ -643,7 +643,6 @@ export function payloadIndicatesPairingLost(source: unknown): boolean {
     normalized === "logged out" ||
     normalized === "logout" ||
     normalized === "unpaired" ||
-    normalized === "unauthorized" ||
     normalized.includes("device_removed") ||
     normalized.includes("logged_out") ||
     normalized.includes("logged out") ||
@@ -676,7 +675,6 @@ export function isPairingLostEvolutionState(state: unknown): boolean {
     normalized === "logged out" ||
     normalized === "logout" ||
     normalized === "unpaired" ||
-    normalized === "unauthorized" ||
     normalized.includes("device_removed") ||
     normalized.includes("logged_out") ||
     normalized.includes("logged out") ||
