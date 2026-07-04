@@ -385,13 +385,15 @@ function Page() {
         <DialogContent>
           <DialogHeader><DialogTitle className="flex items-center gap-2"><QrCode className="h-5 w-5" /> Escaneie o QR Code</DialogTitle></DialogHeader>
           <div className="flex flex-col items-center gap-3 py-4">
-            <div className="rounded-lg bg-white p-4">
+            <div className="rounded-lg bg-white p-4 w-full max-w-[min(80vw,300px)] aspect-square">
               {qrSrc ? (
                 <img
-                  alt="QR"
+                  alt="QR Code para pareamento"
                   width={260}
                   height={260}
-                  className="block h-[260px] w-[260px]"
+                  loading="lazy"
+                  decoding="async"
+                  className="block h-full w-full object-contain"
                   src={qrSrc}
                 />
               ) : null}
