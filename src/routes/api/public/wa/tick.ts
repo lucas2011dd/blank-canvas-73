@@ -64,7 +64,6 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         }
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-        const { evolution } = await import("@/lib/evolution.server");
 
         const nowIso = new Date().toISOString();
         const summary = { broadcasts: 0, scheduled: 0, errors: 0, webhooks: 0, webhookErrors: 0, reauthPaused: 0 };
@@ -116,6 +115,8 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             }
           }
         }
+
+        const { evolution } = await import("@/lib/evolution.server");
 
         // -------- Drena fila de webhooks (arquitetura assíncrona) --------
         // O endpoint /webhook/$instance só enfileira em webhook_logs. Aqui
@@ -294,9 +295,9 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         // não disputar CPU/RAM/I/O com a Evolution Manager.
         //
         // Ajustáveis via variáveis de ambiente do worker:
-        //   TICK_BUDGET_MS       (default 25000) — tempo máximo por tick
-        //   TICK_RECOVERY_MS     (default 10000) — retry após reconexão
-        //   TICK_MIGRATION_RETRY_MS (default 20000) — retry migração após erro
+        //   TICK_BUDGET_MS       (default 8000) — tempo máximo por tick
+        //   TICK_RECOVERY_MS     (default 15000) — retry após reconexão
+        //   TICK_MIGRATION_RETRY_MS (default 300000) — retry migração após erro
         const budgetMs = safeNumberAtLeast(process.env.TICK_BUDGET_MS, 8_000, 3_000);
         const recoveryMs = Number(process.env.TICK_RECOVERY_MS ?? 15_000);
         const migRetryMs = Math.max(300_000, Number(process.env.TICK_MIGRATION_RETRY_MS ?? 300_000));
@@ -563,7 +564,10 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           if (Date.now() >= deadline) break;
 
           // -------- Migrações de grupo devidas --------
-          const { data: migs } = await supabaseAdmin.from("group_migrations")
+          // Com priority lane ativa, migração roda apenas no topo do tick e
+          // nunca depois de webhooks/envios. Isso elimina acúmulo de trabalho
+          // exatamente antes do catch.
+          const { data: migs } = migrationPriorityLane ? { data: [] } : await supabaseAdmin.from("group_migrations")
             .select("id,connection_id,next_attempt_at").eq("status", "running").lte("next_attempt_at", nowIsoPass).order("next_attempt_at", { ascending: true }).limit(1);
           for (const m of migs ?? []) {
             if (Date.now() >= deadline) break;
