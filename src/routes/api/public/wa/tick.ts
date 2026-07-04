@@ -241,20 +241,17 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           } catch { /* ignora falha transitória */ }
         }
 
-        // Loop com orçamento de tempo — processa quantas ações estiverem
-        // devidas dentro da janela do tick. Assim, quando o usuário configura
-        // min/max_delay_seconds baixos, o disparo NÃO fica preso a 1 msg/min.
+        // Loop com orçamento curto. Em VPS 2 vCPU/4GB, o catch da migração deve
+        // ser estritamente serial e isolado: no máximo 1 catch por tick para
+        // não disputar CPU/RAM/I/O com a Evolution Manager.
         //
         // Ajustáveis via variáveis de ambiente do worker:
         //   TICK_BUDGET_MS       (default 25000) — tempo máximo por tick
         //   TICK_RECOVERY_MS     (default 10000) — retry após reconexão
         //   TICK_MIGRATION_RETRY_MS (default 20000) — retry migração após erro
-        const budgetMs = safeNumberAtLeast(process.env.TICK_BUDGET_MS, 25_000, 5_000);
+        const budgetMs = safeNumberAtLeast(process.env.TICK_BUDGET_MS, 8_000, 3_000);
         const recoveryMs = Number(process.env.TICK_RECOVERY_MS ?? 15_000);
-        // CORREÇÃO: migRetryMs aumentado de 20s para 35s.
-        // Após um erro de migração, o Baileys precisa de mais tempo para
-        // estabilizar o WebSocket antes da próxima tentativa de add.
-        const migRetryMs = Number(process.env.TICK_MIGRATION_RETRY_MS ?? 35_000);
+        const migRetryMs = Math.max(300_000, Number(process.env.TICK_MIGRATION_RETRY_MS ?? 300_000));
         const deadline = Date.now() + Math.max(2_000, budgetMs);
         const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
         const migResults: any[] = [];
@@ -272,7 +269,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         }).eq("status", "sending").lt("updated_at", new Date(Date.now() - sendLeaseMs()).toISOString());
 
         let pass = 0;
-        const maxPasses = Number(process.env.TICK_MAX_PASSES ?? 3);
+        const maxPasses = Number(process.env.TICK_MAX_PASSES ?? 1);
         while (Date.now() < deadline && pass < maxPasses) {
           pass++;
           let didWork = false;
@@ -519,24 +516,28 @@ export const Route = createFileRoute("/api/public/wa/tick")({
 
           // -------- Migrações de grupo devidas --------
           const { data: migs } = await supabaseAdmin.from("group_migrations")
-            .select("id,connection_id").eq("status", "running").lte("next_attempt_at", nowIsoPass).limit(5);
+            .select("id,connection_id,next_attempt_at").eq("status", "running").lte("next_attempt_at", nowIsoPass).order("next_attempt_at", { ascending: true }).limit(1);
           for (const m of migs ?? []) {
             if (Date.now() >= deadline) break;
             if (sendConnectionsTouched.has(m.connection_id)) continue;
             if (migrationConnectionsTouched.has(m.connection_id)) continue;
             migrationConnectionsTouched.add(m.connection_id);
             try {
-              const r = await processGroupMigrationBatch(supabaseAdmin, m.id);
+              console.info(`[tick:migration-catch] dispatch migration=${m.id} connection=${m.connection_id} due=${m.next_attempt_at ?? "null"} at=${new Date().toISOString()}`);
+              const r: any = await processGroupMigrationBatch(supabaseAdmin, m.id);
               migResults.push(r);
               if (!r?.skipped) didWork = true;
             } catch (e: any) {
               summary.errors++;
+              const nextAttemptAt = new Date(Date.now() + migRetryMs).toISOString();
+              console.error(`[tick:migration-catch] error migration=${m.id} connection=${m.connection_id} next=${nextAttemptAt} error=${String(e?.message ?? e)}`);
               await supabaseAdmin.from("group_migrations").update({
                 last_error: String(e?.message ?? "erro"),
-                next_attempt_at: new Date(Date.now() + migRetryMs).toISOString(),
+                next_attempt_at: nextAttemptAt,
               }).eq("id", m.id);
               didWork = true;
             }
+            break;
           }
 
           if (!didWork) break;
