@@ -35,7 +35,7 @@ async function handleEvent(
     const explicitDeviceRemoved = /device[_ ]?removed|logged?[_ ]?out|logout|unpaired/i.test(stateAndReason);
     let deviceRemoved = explicitDeviceRemoved;
 
-    if (status === "offline") {
+    if (status === "offline" || status === "connecting") {
       const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
         admin.from("broadcasts").select("id", { count: "exact", head: true })
           .eq("connection_id", conn.id).eq("status", "running"),

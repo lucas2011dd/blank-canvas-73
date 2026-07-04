@@ -270,13 +270,20 @@ export const tickMyMigrations = createServerFn({ method: "POST" })
     const nowIso = new Date().toISOString();
     const { data: due } = await supabaseAdmin
       .from("group_migrations")
-      .select("id")
+      .select("id,connection_id")
       .eq("user_id", context.userId)
       .eq("status", "running")
       .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
-      .limit(10);
+      .order("next_attempt_at", { ascending: true })
+      .limit(1);
     const results: any[] = [];
+    const touchedConnections = new Set<string>();
     for (const m of due ?? []) {
+      if (m.connection_id && touchedConnections.has(m.connection_id)) {
+        results.push({ migrationId: m.id, skipped: true, reason: "same_connection_already_processed_this_tick" });
+        continue;
+      }
+      if (m.connection_id) touchedConnections.add(m.connection_id);
       try {
         results.push(await processGroupMigrationBatch(supabaseAdmin, m.id, context.userId));
       } catch (e: any) {

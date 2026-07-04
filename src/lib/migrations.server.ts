@@ -61,6 +61,14 @@ function participantPhone(p: any): string {
   );
 }
 
+function phoneKey(value: unknown): string {
+  const phone = digits(value);
+  // Brasil: às vezes a Evolution/WhatsApp alterna 55 + DDD + 8/9 dígitos.
+  // Usar os últimos 8 dígitos como alias evita falso "failed" quando o retorno
+  // vem com/sem DDI ou com nono dígito divergente.
+  return phone.length > 8 ? phone.slice(-8) : phone;
+}
+
 function isLoggedOutEvolutionError(error: unknown): boolean {
   const haystack = typeof error === "object" && error !== null
     ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
@@ -118,7 +126,7 @@ async function requeueTransientFailures(supabase: any, migrationId: string) {
     .select("id,error")
     .eq("migration_id", migrationId)
     .eq("status", "failed")
-    .or("error.ilike.%Connection Closed%,error.ilike.%Connection Close%,error.ilike.%timeout%,error.ilike.%socket%,error.ilike.%Error updating participants%,error.eq.");
+    .or("error.ilike.%Connection Closed%,error.ilike.%Connection Close%,error.ilike.%timeout%,error.ilike.%socket%,error.ilike.%stream:error%,error.ilike.%not connected%,error.eq.");
 
   if (!failedRows?.length) return 0;
 
@@ -128,6 +136,24 @@ async function requeueTransientFailures(supabase: any, migrationId: string) {
   }).in("id", failedRows.map((row: any) => row.id));
 
   return failedRows.length;
+}
+
+async function updateMigrationSafe(supabase: any, migrationId: string, patch: Record<string, unknown>) {
+  const { error } = await supabase.from("group_migrations").update(patch).eq("id", migrationId);
+  if (!error) return;
+
+  // Compatibilidade self-hosted: versões antigas do banco não tinham
+  // group_migrations.metadata. Não deixa o batch quebrar depois de já ter
+  // adicionado participante; salva o essencial e registra auditoria via logs.
+  const msg = String(error.message ?? error).toLowerCase();
+  if ("metadata" in patch && (msg.includes("metadata") || msg.includes("schema cache") || msg.includes("column"))) {
+    const { metadata: _metadata, ...withoutMetadata } = patch;
+    const retry = await supabase.from("group_migrations").update(withoutMetadata).eq("id", migrationId);
+    if (!retry.error) return;
+    throw new Error(retry.error.message ?? String(retry.error));
+  }
+
+  throw new Error(error.message ?? String(error));
 }
 
 // CORREÇÃO CRÍTICA (itens 1 e 2):
@@ -219,10 +245,8 @@ async function handleSessionDrop(
   // Restart silencioso (preserva sessão — nunca logout).
   await evolution.restart(instance).catch(() => undefined);
 
-  const nextConnectionStatus = conn?.status === "online" ? "online" : "connecting";
-
   await supabase.from("connections").update({
-    status: nextConnectionStatus,
+    status: "connecting",
     last_sync_at: new Date().toISOString(),
     metadata: {
       ...meta,
@@ -296,11 +320,14 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     // que não protegia entre processos/réplicas. Cooldown curto por padrão:
     // 10min deixava a conexão presa em "Conectando" após uma tentativa falha.
     const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 90_000);
-    const last = conn.last_reconnect_attempt_at ? Date.parse(conn.last_reconnect_attempt_at) : 0;
-    if (last && Date.now() - last < cooldownMs) return false;
-    await supabase.from("connections")
+    const cutoffIso = new Date(Date.now() - cooldownMs).toISOString();
+    const { data: reconnectClaim } = await supabase.from("connections")
       .update({ last_reconnect_attempt_at: new Date().toISOString() })
-      .eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      .eq("id", mig.connection_id).eq("user_id", mig.user_id)
+      .or(`last_reconnect_attempt_at.is.null,last_reconnect_attempt_at.lt.${cutoffIso}`)
+      .select("id,status,metadata")
+      .maybeSingle();
+    if (!reconnectClaim) return false;
     // Reconecta preservando a sessão: restart/reload da instância, nunca /connect.
     const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 2_000 }).catch(() => null);
     if (recovered) {
@@ -309,7 +336,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         ...(recovered.status === "online" ? { qr_code: null } : {}),
         last_sync_at: new Date().toISOString(),
         metadata: {
-          ...(conn.metadata ?? {}),
+          ...(reconnectClaim.metadata ?? conn.metadata ?? {}),
           evolution_instance: instance,
           evolution_state: recovered.state ?? recovered.status,
           auto_reconnect_at: new Date().toISOString(),
@@ -388,18 +415,38 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     }
   }
 
-  // CORREÇÃO: Pausa de estabilização antes de chamar addGroupParticipants.
-  // O Baileys precisa de um intervalo mínimo após reconexão ou após o
-  // último add para não gerar stream:error/device_removed. Mesmo que o
-  // banco indique "online", o WebSocket pode ainda estar se estabilizando.
-  // Usa metadata.last_batch_at para persistir sem precisar de nova coluna.
+  // CORREÇÃO: estabilização sem bloquear o Worker.
+  // Antes o código fazia setTimeout aqui segurando a trava/conexão aberta.
+  // Em Lovable/serverless ou VPS com cron isso acumulava ticks e aumentava a
+  // pressão na Evolution logo após o primeiro batch. Agora apenas reagenda o
+  // próximo attempt e libera a instância.
   const lastAddedAt = (mig.metadata as any)?.last_batch_at
     ? new Date((mig.metadata as any).last_batch_at).getTime()
     : 0;
   const minIntervalMs = Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 15_000);
   const elapsed = Date.now() - lastAddedAt;
   if (elapsed < minIntervalMs) {
-    await new Promise((r) => setTimeout(r, minIntervalMs - elapsed));
+    const waitMs = Math.max(1_000, minIntervalMs - elapsed);
+    const nextAttemptAt = new Date(Date.now() + waitMs).toISOString();
+    await supabase.from("group_migrations").update({
+      next_attempt_at: nextAttemptAt,
+      last_error: null,
+    }).eq("id", mig.id);
+    try {
+      await supabase.from("audit_logs").insert({
+        user_id: mig.user_id,
+        action: "migration_rate_limited",
+        entity: "group_migration",
+        entity_id: mig.id,
+        metadata: {
+          connection_id: mig.connection_id,
+          wait_ms: waitMs,
+          min_interval_ms: minIntervalMs,
+          last_batch_at: (mig.metadata as any)?.last_batch_at ?? null,
+        },
+      });
+    } catch { /* audit best-effort */ }
+    return { migrationId, skipped: true, reason: "rate_limited", nextAttemptAt };
   }
 
   const requeued = await requeueTransientFailures(supabase, mig.id);
@@ -474,14 +521,17 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     const byPhone: Record<string, any> = {};
     for (const item of list) {
       const phone = participantPhone(item);
-      if (phone) byPhone[phone] = item;
+      if (phone) {
+        byPhone[phone] = item;
+        byPhone[phoneKey(phone)] = item;
+      }
     }
 
     // Não fazer nenhuma leitura de participantes após o add. A decisão de
     // sucesso/falha vem 100% do retorno do próprio addGroupParticipants().
     for (const t of batch) {
       const expectedPhone = sendPhoneFor(t.phone);
-      const resolvedIt = byPhone[expectedPhone] ?? byPhone[t.phone];
+      const resolvedIt = byPhone[expectedPhone] ?? byPhone[t.phone] ?? byPhone[phoneKey(expectedPhone)] ?? byPhone[phoneKey(t.phone)];
       const rawStatus = String(resolvedIt?.status ?? resolvedIt?.result ?? "").toLowerCase();
       const apiSuccess = rawStatus === "success" || rawStatus === "200" || resolvedIt?.success === true;
       const apiSkipped = rawStatus === "skipped" || rawStatus === "already_in_group";
@@ -519,7 +569,12 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       // Não pausa de cara: usa handleSessionDrop (restart + backoff).
       // Só marca reauth_required após MIGRATION_MAX_SESSION_DROPS quedas
       // consecutivas — evita QR desnecessário quando a sessão volta sozinha.
-      const outcome = await handleSessionDrop(supabase, mig, conn, instance, e);
+      const { data: freshConn } = await supabase.from("connections")
+        .select("status,metadata,user_id,last_reconnect_attempt_at")
+        .eq("id", mig.connection_id)
+        .eq("user_id", mig.user_id)
+        .maybeSingle();
+      const outcome = await handleSessionDrop(supabase, mig, freshConn ?? conn, instance, e);
       if (outcome.decision === "reauth_required") {
         return { migrationId, added: 0, failed: 0, skipped: 0, done: false, reauthRequired: true, message: REAUTH_REQUIRED_MESSAGE, sessionDropCount: outcome.failCount };
       }
@@ -537,7 +592,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       const consecutive = Number((mig.metadata as any)?.consecutive_transient_failures ?? 0);
       const retryDelayMs = Math.min(baseMs * (2 ** consecutive), capMs);
       const nextConsecutive = consecutive + 1;
-      await supabase.from("group_migrations").update({
+      await updateMigrationSafe(supabase, mig.id, {
         failed_count: effectiveFailedCount,
         next_attempt_at: new Date(Date.now() + retryDelayMs).toISOString(),
         last_error: `Conexão instável durante adição — retry automático em ${Math.round(retryDelayMs / 1000)}s (falha ${nextConsecutive}, backoff exponencial)`,
@@ -547,7 +602,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
           consecutive_transient_failures: nextConsecutive,
           last_transient_failure_at: new Date().toISOString(),
         },
-      }).eq("id", mig.id);
+      });
       // Log de auditoria para acompanhar o padrão de falhas transientes.
       try {
         await supabase.from("audit_logs").insert({
@@ -587,7 +642,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   };
   if (hadProgress) nextMeta.consecutive_transient_failures = 0;
 
-  await supabase.from("group_migrations").update({
+  await updateMigrationSafe(supabase, mig.id, {
     status: done ? "completed" : "running",
     added_count: (mig.added_count ?? 0) + added,
     failed_count: effectiveFailedCount + failed,
@@ -596,14 +651,19 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     finished_at: done ? new Date().toISOString() : null,
     last_error: Object.keys(errors).length ? Object.values(errors)[0] : null,
     metadata: nextMeta,
-  }).eq("id", mig.id);
+  });
 
   // Reset do contador de quedas de sessão quando o batch de fato progrediu.
   // Isso garante que uma oscilação isolada não conte para sempre — só quedas
   // CONSECUTIVAS somam para o limite MIGRATION_MAX_SESSION_DROPS.
   if (hadProgress) {
     try {
-      const connMeta = (conn?.metadata as Record<string, unknown> | null) ?? {};
+      const { data: freshConn } = await supabase.from("connections")
+        .select("metadata")
+        .eq("id", mig.connection_id)
+        .eq("user_id", mig.user_id)
+        .maybeSingle();
+      const connMeta = ((freshConn ?? conn)?.metadata as Record<string, unknown> | null) ?? {};
       if (Number((connMeta as any).session_drop_count ?? 0) > 0) {
         const cleaned = { ...connMeta };
         delete (cleaned as any).session_drop_count;
