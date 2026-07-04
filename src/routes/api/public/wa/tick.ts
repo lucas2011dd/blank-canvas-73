@@ -120,6 +120,37 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 status: "online",
                 state: evState,
               }).catch(() => null);
+
+              // -------- Watchdog anti-trava (Baileys 515 + pre-keys) --------
+              // A Evolution pode reportar "open" enquanto o Baileys travou no
+              // meio da geração de pre-keys / sync de histórico. Fazemos um
+              // probe leve (canReadSession) em intervalos e, se falhar, damos
+              // RESTART (nunca logout — não invalida a sessão pareada).
+              const meta = (conn.metadata as Record<string, any> | null) ?? {};
+              const now = Date.now();
+              const probeInterval = Number(process.env.WATCHDOG_INTERVAL_MS ?? 600_000);
+              const restartCooldown = Number(process.env.WATCHDOG_RESTART_COOLDOWN_MS ?? 600_000);
+              const lastProbe = Date.parse(meta.watchdog_last_check_at ?? "") || 0;
+              const lastRestart = Date.parse(meta.watchdog_restart_at ?? "") || 0;
+              if (
+                !activeMigrationConnectionIds.has(conn.id) &&
+                now - lastProbe > probeInterval
+              ) {
+                const alive = await evolution.canReadSession(instance).catch(() => false);
+                const patch: Record<string, any> = {
+                  ...meta,
+                  evolution_instance: instance,
+                  watchdog_last_check_at: new Date().toISOString(),
+                  watchdog_last_alive: alive,
+                };
+                if (!alive && now - lastRestart > restartCooldown) {
+                  await evolution.restart(instance).catch(() => null);
+                  patch.watchdog_restart_at = new Date().toISOString();
+                  patch.watchdog_restart_reason = "unresponsive_but_online";
+                  console.warn(`[watchdog] restart instância ${instance} (sessão travada)`);
+                }
+                await supabaseAdmin.from("connections").update({ metadata: patch }).eq("id", conn.id);
+              }
             }
           } catch { /* ignora falha transitória */ }
         }
