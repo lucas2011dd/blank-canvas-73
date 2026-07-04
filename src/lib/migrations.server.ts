@@ -22,20 +22,20 @@ function automationBatchSize(value: unknown): number {
 }
 
 function automationDelaySeconds(minValue: unknown, maxValue: unknown): number {
-  // CORREÇÃO CRÍTICA: floors aumentados de 10/20s para 25/45s.
-  // O WhatsApp derruba sessões quando adições de grupo ocorrem em intervalos
-  // muito curtos. Pesquisas da comunidade Baileys indicam que < 20s por
-  // adição de grupo é considerado comportamento suspeito e gera device_removed.
-  // Recomendação: mínimo 25s, máximo 60s para operações de grupo.
-  const minFloor = Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 25);
-  const maxFloor = Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 45);
+  // CORREÇÃO CRÍTICA (endurecida): floors elevados para 60s / 180s.
+  // Testes de campo mostram que qualquer valor < 60s por add em grupo dispara
+  // device_removed no Baileys. 60-180s é a janela recomendada por operadores
+  // de larga escala. Se o usuário configurou algo menor na UI, sobrescrevemos
+  // silenciosamente pelo floor — priorizamos manter a sessão viva.
+  const minFloor = Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 60);
+  const maxFloor = Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 180);
   const min = Math.max(
-    Number.isFinite(Number(minValue)) ? Number(minValue) : 25,
-    Number.isFinite(minFloor) ? minFloor : 25,
+    Number.isFinite(Number(minValue)) ? Number(minValue) : 60,
+    Number.isFinite(minFloor) ? minFloor : 60,
   );
   const max = Math.max(
-    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 45,
-    Number.isFinite(maxFloor) ? maxFloor : 45,
+    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 180,
+    Number.isFinite(maxFloor) ? maxFloor : 180,
     min,
   );
   return jitter(Math.floor(min), Math.floor(max));
