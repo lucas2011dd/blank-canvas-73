@@ -293,8 +293,9 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   const tryReconnect = async () => {
     // CORREÇÃO (item 2): cooldown por CONEXÃO persistido no banco em
     // connections.last_reconnect_attempt_at — antes era um Map em globalThis
-    // que não protegia entre processos/réplicas. Cooldown 10min por padrão.
-    const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 10 * 60_000);
+    // que não protegia entre processos/réplicas. Cooldown curto por padrão:
+    // 10min deixava a conexão presa em "Conectando" após uma tentativa falha.
+    const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 90_000);
     const last = conn.last_reconnect_attempt_at ? Date.parse(conn.last_reconnect_attempt_at) : 0;
     if (last && Date.now() - last < cooldownMs) return false;
     await supabase.from("connections")
