@@ -60,7 +60,7 @@ function Page() {
     if (!hasRunning) return;
     let stopped = false;
     const run = async () => {
-      try { await tickFn({ data: undefined as never }); } catch { /* silencioso */ }
+      try { await tickFn(); } catch { /* silencioso */ }
       if (!stopped) qc.invalidateQueries({ queryKey: ["group-migrations"] });
     };
     run();
