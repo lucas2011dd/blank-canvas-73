@@ -62,6 +62,7 @@ function Page() {
       const rows = contacts.map((c) => [c.name, c.phone, c.email, c.company, c.city].map((v) => `"${(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
       download(header + rows, `contatos-${Date.now()}.csv`, "text/csv");
     } else if (format === "xlsx") {
+      const XLSX = await import("xlsx");
       const ws = XLSX.utils.json_to_sheet(contacts.map((c) => ({ Nome: c.name, Telefone: c.phone, Email: c.email, Empresa: c.company, Cidade: c.city })));
       const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Contatos");
       XLSX.writeFile(wb, `contatos-${Date.now()}.xlsx`);
