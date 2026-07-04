@@ -656,7 +656,14 @@ export function payloadIndicatesPairingLost(source: unknown): boolean {
     s?.disconnectReason,
     s?.instance?.disconnectReason,
   );
-  if (reason && (reason === "401" || reason.includes("401"))) return true;
+  const normalizedReason = String(reason ?? "").toLowerCase();
+  if (
+    normalizedReason.includes("device_removed") ||
+    normalizedReason.includes("logged_out") ||
+    normalizedReason.includes("logged out") ||
+    normalizedReason.includes("logout") ||
+    normalizedReason.includes("unpaired")
+  ) return true;
 
   return false;
 }
@@ -673,9 +680,7 @@ export function isPairingLostEvolutionState(state: unknown): boolean {
     normalized.includes("device_removed") ||
     normalized.includes("logged_out") ||
     normalized.includes("logged out") ||
-    normalized.includes("unpaired") ||
-    normalized.includes("conflict") && normalized.includes("401") ||
-    normalized.includes("stream:error") && normalized.includes("401")
+    normalized.includes("unpaired")
   );
 }
 
@@ -683,23 +688,33 @@ export function isPairingLostEvolutionError(error: unknown): boolean {
   const haystack = typeof error === "object" && error !== null
     ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
     : String(error ?? "").toLowerCase();
+  const explicitPairingLoss =
+    haystack.includes("device_removed") ||
+    haystack.includes("logged_out") ||
+    haystack.includes("logged out") ||
+    haystack.includes("logout") ||
+    haystack.includes("unpaired") ||
+    haystack.includes("pairing_lost") ||
+    haystack.includes("reauth_required");
+  const hardUnauthorized =
+    haystack.includes("401") &&
+    (
+      haystack.includes("unauthoriz") ||
+      haystack.includes("forbidden") ||
+      explicitPairingLoss
+    );
+
   return (
     isPairingLostEvolutionState(haystack) ||
-    haystack.includes("instance is not connected") ||
-    haystack.includes("the instance is not connected") ||
-    haystack.includes("não está conectada") ||
-    haystack.includes("nao esta conectada") ||
-    haystack.includes("statuscode\":401") ||
-    haystack.includes("status code\":401") ||
-    haystack.includes("status\":401")
+    explicitPairingLoss ||
+    hardUnauthorized
   );
 }
 
 export function isTransientEvolutionError(error: unknown): boolean {
-  // IMPORTANTE: device_removed/logged_out/401 NÃO são erros transientes —
-  // são erros permanentes de pareamento. Tratá-los como transientes causava
-  // loop de reconexão que o WhatsApp interpretava como comportamento suspeito,
-  // gerando mais device_removed e invalidando a sessão completamente.
+  // IMPORTANTE: só device_removed/logged_out/logout/unpaired são perda real de
+  // pareamento. statusReason 401 isolado durante addGroupParticipants pode ser
+  // apenas fechamento transitório do stream Baileys e deve cair em backoff.
   if (isPairingLostEvolutionError(error)) return false;
   const haystack = typeof error === "object" && error !== null
     ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
@@ -711,14 +726,15 @@ export function isTransientEvolutionError(error: unknown): boolean {
     haystack.includes("device_removed") ||
     haystack.includes("logged_out") ||
     haystack.includes("logged out") ||
-    (haystack.includes("stream:error") && haystack.includes("401")) ||
-    haystack.includes("statusreason\":\"401") ||
-    haystack.includes("statusreason:401") ||
-    haystack.includes("status\":\"401") ||
-    haystack.includes("status:401")
+    haystack.includes("logout") ||
+    haystack.includes("unpaired")
   );
   if (isPermanent) return false;
   return (
+    haystack.includes("515") ||
+    haystack.includes("428") ||
+    haystack.includes("stream:error") ||
+    haystack.includes("stream error") ||
     haystack.includes("connection closed") ||
     haystack.includes("connection close") ||
     haystack.includes("instance is not connected") ||

@@ -67,11 +67,10 @@ function isLoggedOutEvolutionError(error: unknown): boolean {
     : String(error ?? "").toLowerCase();
   return (
     haystack.includes("device_removed") ||
-    haystack.includes("statusreason\":401") ||
-    haystack.includes("statusreason:401") ||
     haystack.includes("logout") ||
     haystack.includes("logged out") ||
-    haystack.includes("stream:error") && haystack.includes("401")
+    haystack.includes("logged_out") ||
+    haystack.includes("unpaired")
   );
 }
 
@@ -88,7 +87,14 @@ function pairingLostSignal(_conn: any, state?: any): boolean {
     state?.statusReason ??
     state?.data?.statusReason ??
     state?.data?.instance?.statusReason;
-  if (reason === 401 || String(reason) === "401") return true;
+  const reasonText = String(reason ?? "").toLowerCase();
+  if (
+    reasonText.includes("device_removed") ||
+    reasonText.includes("logged_out") ||
+    reasonText.includes("logged out") ||
+    reasonText.includes("logout") ||
+    reasonText.includes("unpaired")
+  ) return true;
   const stateField = String(
     state?.instance?.state ??
     state?.instance?.status ??
@@ -213,8 +219,10 @@ async function handleSessionDrop(
   // Restart silencioso (preserva sessão — nunca logout).
   await evolution.restart(instance).catch(() => undefined);
 
+  const nextConnectionStatus = conn?.status === "online" ? "online" : "connecting";
+
   await supabase.from("connections").update({
-    status: "connecting",
+    status: nextConnectionStatus,
     last_sync_at: new Date().toISOString(),
     metadata: {
       ...meta,
@@ -223,6 +231,7 @@ async function handleSessionDrop(
       last_session_drop_at: new Date().toISOString(),
       last_session_drop_reason: String(reasonStr ?? ""),
       evolution_state: "graceful_restart_pending",
+      migration_recovery_status_preserved: conn?.status === "online",
     },
   }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
 
@@ -284,8 +293,9 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   const tryReconnect = async () => {
     // CORREÇÃO (item 2): cooldown por CONEXÃO persistido no banco em
     // connections.last_reconnect_attempt_at — antes era um Map em globalThis
-    // que não protegia entre processos/réplicas. Cooldown 10min por padrão.
-    const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 10 * 60_000);
+    // que não protegia entre processos/réplicas. Cooldown curto por padrão:
+    // 10min deixava a conexão presa em "Conectando" após uma tentativa falha.
+    const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 90_000);
     const last = conn.last_reconnect_attempt_at ? Date.parse(conn.last_reconnect_attempt_at) : 0;
     if (last && Date.now() - last < cooldownMs) return false;
     await supabase.from("connections")

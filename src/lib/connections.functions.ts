@@ -775,9 +775,11 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
     const chatsRaw = chatsRes.status === "fulfilled" ? chatsRes.value : [];
     const groupsRaw = groupsRes.status === "fulfilled" ? groupsRes.value : [];
 
-    // Detecta socket morto (device_removed / Connection Closed) — sync silencioso não resolve
+    // Detecta socket morto sem confundir 401/Connection Closed transitório com
+    // logout definitivo. Só device_removed/logout/unpaired deve pausar tudo e
+    // pedir QR; o restante fica como instabilidade temporária.
     const failures = [contactsRes, chatsRes, groupsRes].filter((r) => r.status === "rejected") as PromiseRejectedResult[];
-    const socketDead = failures.some((f) => /Connection Closed|device_removed|401/i.test(String(f.reason?.message ?? f.reason ?? "")));
+    const socketDead = failures.some((f) => /Connection Closed|device_removed|logged[_ ]?out|logout|unpaired|401/i.test(String(f.reason?.message ?? f.reason ?? "")));
     if (socketDead && contactsRaw.length === 0 && chatsRaw.length === 0 && groupsRaw.length === 0) {
       // Tenta um restart; se falhar, sinaliza para o usuário reparear.
       try { await evolution.restart(name); } catch { /* noop */ }
@@ -788,8 +790,9 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
           instanceName: name,
           reason: "device_removed",
         });
+        throw new Error("A sessão do WhatsApp foi removida dos aparelhos conectados no seu celular. Clique em Reconectar e escaneie o QR novamente.");
       }
-      throw new Error("A sessão do WhatsApp foi removida dos aparelhos conectados no seu celular. Clique em Reconectar e escaneie o QR novamente.");
+      throw new Error("WhatsApp instável no momento; solicitei restart silencioso e mantive a sessão sem pedir novo QR. Tente sincronizar novamente em alguns segundos.");
     }
 
     // ---------- Contatos ----------

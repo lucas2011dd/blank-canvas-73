@@ -74,10 +74,11 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const { markConnectionReauthRequired, REAUTH_REQUIRED_MESSAGE } = await import("@/lib/automation-safety.server");
         const { persistSessionSnapshot } = await import("@/lib/session-store.server");
         for (const conn of webhookConns ?? []) {
-          // Durante migração ativa e conexão já online, não faça setWebhook,
-          // state nem fetchInstances no início do tick. Essas chamadas entre
-          // um add e o próximo sobrecarregam o WebSocket da Evolution.
-          if (conn.status === "online" && activeMigrationConnectionIds.has(conn.id)) continue;
+          // Durante migração ativa, não faça setWebhook/state/fetchInstances
+          // nem restart no reconciliador. A própria migração gerencia restart
+          // e backoff; reconciliar aqui criava loop: connecting → restart →
+          // close → connecting após o primeiro batch.
+          if (activeMigrationConnectionIds.has(conn.id)) continue;
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
           const wh = buildWebhookUrl(instance);
           if (wh) await evolution.setWebhook(instance, wh).catch(() => null);
