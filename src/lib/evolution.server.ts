@@ -214,9 +214,11 @@ export const evolution = {
   },
 
   async fetchAllGroups(instanceName: string): Promise<any[]> {
+    // Timeout alto: em instâncias com muito histórico em cache, a Evolution
+    // pode levar 30s+ para montar a resposta de /group/fetchAllGroups.
     const res = await call<any>(
       `/group/fetchAllGroups/${encodeURIComponent(instanceName)}?getParticipants=false`,
-      { method: "GET" },
+      { method: "GET", timeoutMs: 60_000 },
     );
     return Array.isArray(res) ? res : (res?.groups ?? res?.data ?? []);
   },

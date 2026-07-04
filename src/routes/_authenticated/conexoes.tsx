@@ -154,9 +154,10 @@ function Page() {
       const errs = r.fetchErrors ?? {};
       const errList = ["contacts", "chats", "groups"].filter((k) => errs[k]);
       if (errList.length) {
-        toast.warning(`Sync parcial — ${parts.join(", ")}. Falha em: ${errList.join(", ")}. Aguarde e tente de novo.`);
-      } else if ((r.contactsFetched ?? 0) === 0 && (r.chatsFetched ?? 0) === 0 && (r.groupsFetched ?? 0) === 0) {
-        toast.warning("Sync concluído mas Evolution retornou 0 itens. Verifique se o WhatsApp está realmente pareado (Aparelhos conectados) e tente reconectar.");
+        const reasons = errList.map((k) => `${k}: ${errs[k]}`).join(" | ");
+        toast.warning(`Sync parcial — ${parts.join(", ")}. ${reasons}`);
+      } else if ((r.groupsFetched ?? 0) === 0) {
+        toast.warning("Evolution respondeu, mas retornou 0 grupos. Isso normalmente é excesso de cache/mensagens na instância — no Evolution Manager clique Delete na instância, crie de novo (Instance +) e escaneie o QR pelo ConnectHub.");
       } else {
         toast.success(`Sync: ${parts.join(", ")}`);
       }
