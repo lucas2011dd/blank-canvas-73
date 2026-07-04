@@ -141,7 +141,7 @@ function UsersPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {(users ?? []).map((u) => {
+                {(users ?? []).map((u: any) => {
                   const isAdmin = u.roles.includes("admin");
                   return (
                     <TableRow key={u.id}>

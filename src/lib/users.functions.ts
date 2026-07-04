@@ -17,7 +17,7 @@ export const listUsers = createServerFn({ method: "GET" })
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { data: authList, error } = await supabaseAdmin.auth.admin.listUsers({ perPage: 200 });
     if (error) throw new Error(error.message);
-    const ids = authList.users.map((u) => u.id);
+    const ids = authList.users.map((u: any) => u.id);
     const [{ data: profiles }, { data: roles }] = await Promise.all([
       supabaseAdmin.from("profiles").select("id,email,full_name,is_active,created_at").in("id", ids),
       supabaseAdmin.from("user_roles").select("user_id,role").in("user_id", ids),
@@ -29,7 +29,7 @@ export const listUsers = createServerFn({ method: "GET" })
       arr.push((r as any).role);
       rmap.set((r as any).user_id, arr);
     }
-    return authList.users.map((u) => ({
+    return authList.users.map((u: any) => ({
       id: u.id,
       email: u.email ?? "",
       full_name: (pmap.get(u.id) as any)?.full_name ?? "",
