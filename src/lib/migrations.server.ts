@@ -333,15 +333,10 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         const state = await evolution.state(instance).catch(() => null);
         const sessionRemoved = isLoggedOutEvolutionError(state) || pairingLostSignal(conn, state);
           if (sessionRemoved) {
-            await markConnectionReauthRequired(supabase, {
-              connectionId: mig.connection_id,
-              userId: mig.user_id,
-              instanceName: instance,
-              reason: "device_removed",
-            });
-            await requeueTransientFailures(supabase, mig.id);
-            return { migrationId, skipped: true, reason: "reauth_required" };
+            const outcome = await handleSessionDrop(supabase, mig, conn, instance, state ?? "device_removed");
+            return { migrationId, skipped: true, reason: outcome.decision, sessionDropCount: outcome.failCount };
           }
+
           const recovered = await tryReconnect();
           if (recovered) {
           await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
