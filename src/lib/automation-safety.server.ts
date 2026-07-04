@@ -63,7 +63,7 @@ export async function markConnectionReauthRequired(
     .eq("connection_id", args.connectionId)
     .eq("status", "running");
   if (args.userId) broadcasts = broadcasts.eq("user_id", args.userId);
-  await safeStep("pause broadcasts", () => broadcasts);
+  const pauseBroadcastsResult = await safeStep("pause broadcasts", () => broadcasts);
 
   let broadcastIdsQuery = supabase
     .from("broadcasts")
@@ -73,7 +73,7 @@ export async function markConnectionReauthRequired(
   if (args.userId) broadcastIdsQuery = broadcastIdsQuery.eq("user_id", args.userId);
   const { data: broadcastRows } = await broadcastIdsQuery;
   const broadcastIds = (broadcastRows ?? []).map((row: any) => row.id).filter(Boolean);
-  if (broadcastIds.length) {
+  if (broadcastIds.length && !pauseBroadcastsResult?.error) {
     await safeStep("requeue sending broadcast targets", () => supabase
       .from("broadcast_targets")
       .update({ status: "pending", error: REAUTH_REQUIRED_MESSAGE })

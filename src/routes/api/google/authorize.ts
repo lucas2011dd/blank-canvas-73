@@ -18,8 +18,8 @@ export const Route = createFileRoute("/api/google/authorize")({
         const token = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
         if (!token) return new Response("unauthorized", { status: 401 });
 
-        const supaUrl = process.env.SUPABASE_URL;
-        const supaKey = process.env.SUPABASE_PUBLISHABLE_KEY;
+        const supaUrl = process.env.EXT_SUPABASE_URL ?? process.env.SUPABASE_URL;
+        const supaKey = process.env.EXT_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY ?? process.env.SUPABASE_PUBLISHABLE_KEY;
         if (!supaUrl || !supaKey) return new Response("supabase env ausente", { status: 500 });
         const client = createClient(supaUrl, supaKey, {
           auth: { persistSession: false, autoRefreshToken: false, storage: undefined },
