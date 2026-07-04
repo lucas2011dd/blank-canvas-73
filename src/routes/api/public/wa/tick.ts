@@ -69,6 +69,54 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const nowIso = new Date().toISOString();
         const summary = { broadcasts: 0, scheduled: 0, errors: 0, webhooks: 0, webhookErrors: 0, reauthPaused: 0 };
 
+        // Faixa prioritária da migração: se existe catch devido, este tick faz
+        // SOMENTE 1 catch e retorna. Antes, o mesmo tick drenava webhooks,
+        // reconciliava conexões, broadcasts e agendamentos ANTES do catch; em
+        // VPS 2 vCPU/4GB isso criava pico exatamente no horário da migração.
+        const migrationPriorityLane = String(process.env.TICK_MIGRATION_PRIORITY_LANE ?? "true").toLowerCase() !== "false";
+        if (migrationPriorityLane) {
+          const { data: dueMigration } = await supabaseAdmin.from("group_migrations")
+            .select("id,connection_id,next_attempt_at")
+            .eq("status", "running")
+            .lte("next_attempt_at", nowIso)
+            .order("next_attempt_at", { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+          if (dueMigration?.id) {
+            const startedAt = new Date();
+            const retryMs = Math.max(300_000, Number(process.env.TICK_MIGRATION_RETRY_MS ?? 300_000));
+            const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
+            console.info(
+              `[tick:migration-catch] PRIORITY_START migration=${dueMigration.id} connection=${dueMigration.connection_id} due=${dueMigration.next_attempt_at ?? "null"} start=${startedAt.toISOString()}`,
+            );
+            try {
+              const result: any = await processGroupMigrationBatch(supabaseAdmin, dueMigration.id);
+              const { data: after } = await supabaseAdmin.from("group_migrations")
+                .select("status,next_attempt_at")
+                .eq("id", dueMigration.id)
+                .maybeSingle();
+              const finishedAt = new Date();
+              const waitMs = after?.next_attempt_at ? Math.max(0, Date.parse(after.next_attempt_at) - finishedAt.getTime()) : null;
+              console.info(
+                `[tick:migration-catch] PRIORITY_END migration=${dueMigration.id} connection=${dueMigration.connection_id} finish=${finishedAt.toISOString()} duration_ms=${finishedAt.getTime() - startedAt.getTime()} next=${after?.next_attempt_at ?? "null"} wait_ms=${waitMs ?? "null"}`,
+              );
+              return Response.json({ ok: true, ...summary, migrations: [result], priorityMigration: true, at: nowIso });
+            } catch (e: any) {
+              summary.errors++;
+              const nextAttemptAt = new Date(Date.now() + retryMs).toISOString();
+              await supabaseAdmin.from("group_migrations").update({
+                last_error: String(e?.message ?? "erro"),
+                next_attempt_at: nextAttemptAt,
+              }).eq("id", dueMigration.id);
+              console.error(
+                `[tick:migration-catch] PRIORITY_ERROR migration=${dueMigration.id} connection=${dueMigration.connection_id} next=${nextAttemptAt} error=${String(e?.message ?? e)}`,
+              );
+              return Response.json({ ok: true, ...summary, migrations: [{ migrationId: dueMigration.id, error: String(e?.message ?? e), nextAttemptAt }], priorityMigration: true, at: nowIso });
+            }
+          }
+        }
+
         // -------- Drena fila de webhooks (arquitetura assíncrona) --------
         // O endpoint /webhook/$instance só enfileira em webhook_logs. Aqui
         // processamos com retry/backoff, sem prender a Evolution em 30s.
