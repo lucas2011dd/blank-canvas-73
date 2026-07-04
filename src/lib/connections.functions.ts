@@ -77,6 +77,8 @@ async function hardDeleteConnectionRows(db: any, userId: string, connectionIds: 
 async function removeEvolutionBestEffort(evolution: typeof import("@/lib/evolution.server").evolution, instanceName: string) {
   const withTimeout = <T,>(p: Promise<T>, ms = 5_000) =>
     Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
+  // AUDIT: logout INTENCIONAL — usuário está removendo/deletando a conexão.
+  // Nenhum caminho automático (watchdog/tick/reconnect) chama logout.
   await withTimeout(evolution.logout(instanceName)).catch(() => null);
   await withTimeout(evolution.remove(instanceName)).catch(() => null);
   const list = await withTimeout(evolution.fetchInstancesStrict(), 5_000).catch(() => null);
@@ -733,6 +735,8 @@ export const disconnectConnection = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     try {
       const { evolution } = await import("@/lib/evolution.server");
+      // AUDIT: logout INTENCIONAL — usuário clicou em "Desconectar" na UI.
+      // Automações (watchdog, tick, reconnect) usam evolution.restart(), nunca logout.
       await evolution.logout(instanceNameFor(data.id)).catch(() => null);
     } catch { /* ignore */ }
     // Marca como desconexão manual — a partir daqui os loops automáticos NÃO
