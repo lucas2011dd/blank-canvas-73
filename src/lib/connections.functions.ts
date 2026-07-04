@@ -802,13 +802,13 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
     if (!connRow) throw new Error("Conexão não encontrada");
     const name = instanceNameFromConnection(connRow);
 
-    // Sync com caps seguros para VPS 4GB/2 núcleos. Grupos sempre; contatos e
-    // chats vêm com limite (default 1000/500) e podem ser desligados por env.
-    // Só desligue via env se a Evolution estiver derrubando a sessão.
-    const disableContacts = String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() === "false";
-    const disableChats = String(process.env.WHATSAPP_SYNC_CHATS ?? "").toLowerCase() === "false";
-    const syncContacts = !disableContacts;
-    const syncChats = !disableChats;
+    // Sync focado em grupos (a feature principal é migração de grupos).
+    // Contatos e chats individuais NÃO são baixados por padrão — chegam via
+    // webhook conforme atividade real, evitando dumps de 10k+ na VPS de 4GB.
+    // Para forçar o dump inicial, defina WHATSAPP_SYNC_CONTACTS=true ou
+    // WHATSAPP_SYNC_CHATS=true (com caps configuráveis).
+    const syncContacts = String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() === "true";
+    const syncChats = String(process.env.WHATSAPP_SYNC_CHATS ?? "").toLowerCase() === "true";
     const contactsLimit = Math.min(safeNumberAtLeast(process.env.WHATSAPP_SYNC_CONTACTS_LIMIT, 1_000, 1), 5_000);
     const chatsLimit = Math.min(safeNumberAtLeast(process.env.WHATSAPP_SYNC_CHATS_LIMIT, 500, 1), 2_000);
 
