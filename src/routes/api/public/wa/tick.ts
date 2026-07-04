@@ -353,56 +353,58 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 if (k === "telefone") return t.phone ?? "";
                 return "";
               });
-              await evolution.sendText(instance, t.phone, body);
-              await supabaseAdmin.from("broadcast_targets").update({
-                status: "sent", sent_at: new Date().toISOString(),
-              }).eq("id", t.id);
-              await syncBroadcastCounters(supabaseAdmin, bc.id);
-              summary.broadcasts++;
-            } catch (e: any) {
-              if (isPairingLostEvolutionError(e)) {
-                await supabaseAdmin.from("broadcast_targets").update({
-                  status: "pending",
-                  error: REAUTH_REQUIRED_MESSAGE,
-                }).eq("id", t.id);
-                await markConnectionReauthRequired(supabaseAdmin, {
-                  connectionId: bc.connection_id,
-                  userId: bc.user_id,
-                  instanceName: instance,
-                  reason: String(e?.message ?? "device_removed"),
-                });
-                summary.reauthPaused++;
-                didWork = true;
-                continue;
-              }
-              if (isTransientEvolutionError(e)) {
-                await supabaseAdmin.from("connections").update({
-                  status: "connecting",
-                  last_sync_at: new Date().toISOString(),
-                  metadata: {
-                    ...((conn.metadata as Record<string, unknown> | null) ?? {}),
-                    evolution_instance: instance,
-                    evolution_state: "transient_send_backoff_no_restart",
-                    auto_reconnect_at: new Date().toISOString(),
-                  },
-                }).eq("id", bc.connection_id);
-                await supabaseAdmin.from("broadcast_targets").update({
-                  status: "pending",
-                  next_attempt_at: new Date(Date.now() + Math.max(recoveryMs, broadcastDelayMs(bc))).toISOString(),
-                  error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
-                }).eq("id", t.id);
-                continue;
-              }
-              await supabaseAdmin.from("broadcast_targets").update({
-                status: "failed", error: String(e?.message ?? "erro"),
-              }).eq("id", t.id);
-              await syncBroadcastCounters(supabaseAdmin, bc.id);
-              summary.errors++;
-            }
 
-            const nextAt = new Date(Date.now() + broadcastDelayMs(bc)).toISOString();
-            await supabaseAdmin.from("broadcast_targets")
-              .update({ next_attempt_at: nextAt }).eq("broadcast_id", bc.id).eq("status", "pending");
+              try {
+                await evolution.sendText(instance, t.phone, body);
+                await supabaseAdmin.from("broadcast_targets").update({
+                  status: "sent", sent_at: new Date().toISOString(),
+                }).eq("id", t.id);
+                await syncBroadcastCounters(supabaseAdmin, bc.id);
+                summary.broadcasts++;
+              } catch (e: any) {
+                if (isPairingLostEvolutionError(e)) {
+                  await supabaseAdmin.from("broadcast_targets").update({
+                    status: "pending",
+                    error: REAUTH_REQUIRED_MESSAGE,
+                  }).eq("id", t.id);
+                  await markConnectionReauthRequired(supabaseAdmin, {
+                    connectionId: bc.connection_id,
+                    userId: bc.user_id,
+                    instanceName: instance,
+                    reason: String(e?.message ?? "device_removed"),
+                  });
+                  summary.reauthPaused++;
+                  didWork = true;
+                  continue;
+                }
+                if (isTransientEvolutionError(e)) {
+                  await supabaseAdmin.from("connections").update({
+                    status: "connecting",
+                    last_sync_at: new Date().toISOString(),
+                    metadata: {
+                      ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                      evolution_instance: instance,
+                      evolution_state: "transient_send_backoff_no_restart",
+                      auto_reconnect_at: new Date().toISOString(),
+                    },
+                  }).eq("id", bc.connection_id);
+                  await supabaseAdmin.from("broadcast_targets").update({
+                    status: "pending",
+                    next_attempt_at: new Date(Date.now() + Math.max(recoveryMs, broadcastDelayMs(bc))).toISOString(),
+                    error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
+                  }).eq("id", t.id);
+                  continue;
+                }
+                await supabaseAdmin.from("broadcast_targets").update({
+                  status: "failed", error: String(e?.message ?? "erro"),
+                }).eq("id", t.id);
+                await syncBroadcastCounters(supabaseAdmin, bc.id);
+                summary.errors++;
+              }
+
+              const nextAt = new Date(Date.now() + broadcastDelayMs(bc)).toISOString();
+              await supabaseAdmin.from("broadcast_targets")
+                .update({ next_attempt_at: nextAt }).eq("broadcast_id", bc.id).eq("status", "pending");
             } finally {
               await releaseConnectionSendLock(supabaseAdmin, bc.connection_id, lockUntil);
             }
@@ -450,60 +452,63 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               if (!claimed) continue;
               sendConnectionsTouched.add(row.connection_id);
               didWork = true;
-              await evolution.sendText(instance, claimed.target, claimed.body);
-              await supabaseAdmin.from("scheduled_messages").update({
-                status: "sent", sent_at: new Date().toISOString(), attempts: (claimed.attempts ?? 0) + 1,
-              }).eq("id", claimed.id);
-              summary.scheduled++;
-              if (claimed.recurrence === "daily" || claimed.recurrence === "weekly") {
-                const step = claimed.recurrence === "daily" ? 1 : 7;
-                const nextAt = new Date(new Date(claimed.scheduled_at).getTime() + step * 86400_000).toISOString();
-                await supabaseAdmin.from("scheduled_messages").insert({
-                  user_id: claimed.user_id, connection_id: claimed.connection_id,
-                  target_kind: claimed.target_kind, target: claimed.target, target_label: claimed.target_label,
-                  body: claimed.body, scheduled_at: nextAt, recurrence: claimed.recurrence, status: "pending",
-                });
-              }
-            } catch (e: any) {
-              if (isPairingLostEvolutionError(e)) {
+
+              try {
+                await evolution.sendText(instance, claimed.target, claimed.body);
                 await supabaseAdmin.from("scheduled_messages").update({
-                  status: "pending",
-                  last_error: REAUTH_REQUIRED_MESSAGE,
-                  attempts: (claimed.attempts ?? 0) + 1,
+                  status: "sent", sent_at: new Date().toISOString(), attempts: (claimed.attempts ?? 0) + 1,
                 }).eq("id", claimed.id);
-                await markConnectionReauthRequired(supabaseAdmin, {
-                  connectionId: row.connection_id,
-                  userId: row.user_id,
-                  instanceName: instance,
-                  reason: String(e?.message ?? "device_removed"),
-                });
-                summary.reauthPaused++;
-                didWork = true;
-                continue;
-              }
-              if (isTransientEvolutionError(e)) {
-                await supabaseAdmin.from("connections").update({
-                  status: "connecting",
-                  last_sync_at: new Date().toISOString(),
-                  metadata: {
-                    ...((conn.metadata as Record<string, unknown> | null) ?? {}),
-                    evolution_instance: instance,
-                    evolution_state: "transient_scheduled_backoff_no_restart",
-                    auto_reconnect_at: new Date().toISOString(),
-                  },
-                }).eq("id", row.connection_id);
+                summary.scheduled++;
+                if (claimed.recurrence === "daily" || claimed.recurrence === "weekly") {
+                  const step = claimed.recurrence === "daily" ? 1 : 7;
+                  const nextAt = new Date(new Date(claimed.scheduled_at).getTime() + step * 86400_000).toISOString();
+                  await supabaseAdmin.from("scheduled_messages").insert({
+                    user_id: claimed.user_id, connection_id: claimed.connection_id,
+                    target_kind: claimed.target_kind, target: claimed.target, target_label: claimed.target_label,
+                    body: claimed.body, scheduled_at: nextAt, recurrence: claimed.recurrence, status: "pending",
+                  });
+                }
+              } catch (e: any) {
+                if (isPairingLostEvolutionError(e)) {
+                  await supabaseAdmin.from("scheduled_messages").update({
+                    status: "pending",
+                    last_error: REAUTH_REQUIRED_MESSAGE,
+                    attempts: (claimed.attempts ?? 0) + 1,
+                  }).eq("id", claimed.id);
+                  await markConnectionReauthRequired(supabaseAdmin, {
+                    connectionId: row.connection_id,
+                    userId: row.user_id,
+                    instanceName: instance,
+                    reason: String(e?.message ?? "device_removed"),
+                  });
+                  summary.reauthPaused++;
+                  didWork = true;
+                  continue;
+                }
+                if (isTransientEvolutionError(e)) {
+                  await supabaseAdmin.from("connections").update({
+                    status: "connecting",
+                    last_sync_at: new Date().toISOString(),
+                    metadata: {
+                      ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                      evolution_instance: instance,
+                      evolution_state: "transient_scheduled_backoff_no_restart",
+                      auto_reconnect_at: new Date().toISOString(),
+                    },
+                  }).eq("id", row.connection_id);
+                  await supabaseAdmin.from("scheduled_messages").update({
+                    status: "pending",
+                    scheduled_at: new Date(Date.now() + recoveryMs).toISOString(),
+                    last_error: "Reconectando WhatsApp sem novo QR; envio será tentado novamente",
+                    attempts: (claimed.attempts ?? 0) + 1,
+                  }).eq("id", claimed.id);
+                  continue;
+                }
                 await supabaseAdmin.from("scheduled_messages").update({
-                  status: "pending",
-                  scheduled_at: new Date(Date.now() + recoveryMs).toISOString(),
-                  last_error: "Reconectando WhatsApp sem novo QR; envio será tentado novamente",
-                  attempts: (claimed.attempts ?? 0) + 1,
+                  status: "failed", last_error: String(e?.message ?? "erro"), attempts: (claimed.attempts ?? 0) + 1,
                 }).eq("id", claimed.id);
-                continue;
+                summary.errors++;
               }
-              await supabaseAdmin.from("scheduled_messages").update({
-                status: "failed", last_error: String(e?.message ?? "erro"), attempts: (claimed.attempts ?? 0) + 1,
-              }).eq("id", claimed.id);
-              summary.errors++;
             } finally {
               await releaseConnectionSendLock(supabaseAdmin, row.connection_id, lockUntil);
             }
