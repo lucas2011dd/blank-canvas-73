@@ -457,7 +457,12 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         const state = await evolution.state(instance).catch(() => null);
         const sessionRemoved = isLoggedOutEvolutionError(state) || pairingLostSignal(conn, state);
           if (sessionRemoved) {
-            const outcome = await handleSessionDrop(supabase, mig, conn, instance, state ?? "device_removed");
+            const { data: freshConn } = await supabase.from("connections")
+              .select("status,metadata,user_id,last_reconnect_attempt_at")
+              .eq("id", mig.connection_id)
+              .eq("user_id", mig.user_id)
+              .maybeSingle();
+            const outcome = await handleSessionDrop(supabase, mig, freshConn ?? conn, instance, state ?? "device_removed");
             return { migrationId, skipped: true, reason: outcome.decision, sessionDropCount: outcome.failCount };
           }
 
@@ -637,10 +642,12 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         // A Evolution v2 às vezes retorna lista vazia mesmo em sucesso.
         // Marcar como "added" com nota de incerteza é mais seguro que falhar.
         if (!resolvedIt && list.length === 0) {
-          // Resposta vazia: assumir sucesso (comportamento observado na Evolution v2)
+          // Resposta vazia: assumir sucesso (comportamento observado na Evolution v2),
+          // mas deixando rastro visível para revisão/auditoria em produção.
           await supabase.from("group_migration_targets").update({
             status: "added", phone: expectedPhone, jid: `${expectedPhone}@s.whatsapp.net`,
             added_at: new Date().toISOString(),
+            error: "resposta_vazia_presumido_sucesso",
           }).eq("id", t.id);
           added++;
         } else {

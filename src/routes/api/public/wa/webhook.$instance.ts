@@ -115,6 +115,14 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                 delete metaUpdate.last_session_drop_at;
                 delete metaUpdate.last_session_drop_reason;
                 delete metaUpdate.status_reason;
+                delete metaUpdate.disconnected_at;
+              }
+              if (skipStatusFlip) {
+                delete metaUpdate.pairing_lost_at;
+                delete metaUpdate.pairing_lost_reason;
+                delete metaUpdate.device_removed_at;
+                delete metaUpdate.status_reason;
+                delete metaUpdate.disconnected_at;
               }
 
               await supabaseAdmin.from("connections").update({

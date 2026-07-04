@@ -56,6 +56,10 @@ async function handleEvent(
         };
         delete metaUpdate.pairing_lost_at;
         delete metaUpdate.pairing_lost_reason;
+        delete metaUpdate.device_removed_at;
+        delete metaUpdate.status_reason;
+        delete metaUpdate.disconnected_at;
+        delete metaUpdate.last_evolution_error_code;
         await admin.from("connections").update({
           status: conn.status,
           qr_code: null,

@@ -801,6 +801,19 @@ export async function reconnectEvolutionSession(
   if (before?.status === "online") return { ...before, restarted: false };
   if (before && isPairingLostEvolutionState(before.state)) return { ...before, restarted: false };
 
+  // Se nem o probe de estado respondeu, não dispare restart às cegas. Em pico
+  // de latência da Evolution isso multiplicava restarts por tick e podia
+  // derrubar uma sessão que ainda estava viva.
+  if (!before) {
+    let latest = { status: "connecting" as EvolutionConnectionStatus, state: "status_probe_failed", usable: false };
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      await wait(delayMs + attempt * 500);
+      latest = await resolveEvolutionStatus(instanceName).catch(() => latest);
+      if (latest.status === "online") return { ...latest, restarted: false };
+    }
+    return { ...latest, restarted: false };
+  }
+
   // Reconexão automática preserva sessão: usa restart/reload. /connect só é
   // permitido em ação manual, pois em Baileys pode iniciar fluxo de QR.
   // /instance/restart retorna 400 quando a sessão não está conectada.
@@ -808,7 +821,7 @@ export async function reconnectEvolutionSession(
   // se aciona /connect para gerar novo QR.
   await evolution.restart(instanceName).catch(() => undefined);
 
-  let latest = before ?? { status: "connecting" as EvolutionConnectionStatus, state: "restart_requested", usable: false };
+  let latest = before;
   for (let attempt = 0; attempt < attempts; attempt++) {
     await wait(delayMs + attempt * 500);
     latest = await resolveEvolutionStatus(instanceName).catch(() => latest);

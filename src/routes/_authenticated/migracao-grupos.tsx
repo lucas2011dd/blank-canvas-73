@@ -77,7 +77,7 @@ function Page() {
       const now = Date.now();
       const lease = readAutoTickLease();
       if (lease?.owner && lease.owner !== autoTickTabId.current && Number(lease.expiresAt ?? 0) > now) return;
-      window.localStorage.setItem(AUTO_TICK_LEASE_KEY, JSON.stringify({ owner: autoTickTabId.current, expiresAt: now + 28_000 }));
+      window.localStorage.setItem(AUTO_TICK_LEASE_KEY, JSON.stringify({ owner: autoTickTabId.current, expiresAt: now + 45_000 }));
       autoTickInFlight.current = true;
       try {
         await tickFn();
