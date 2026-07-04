@@ -8,10 +8,11 @@ export const getMyProfile = createServerFn({ method: "GET" })
     const { data, error } = await context.supabase.from("profiles").select("*").eq("id", context.userId).maybeSingle();
     if (error) throw new Error(error.message);
     if (data) return data;
-    // Auto-cria o profile se ainda não existe
-    const { data: created, error: insErr } = await context.supabase
+    // Auto-cria o profile se ainda não existe (usa admin client — RLS não tem policy de INSERT)
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: created, error: insErr } = await supabaseAdmin
       .from("profiles")
-      .insert({ id: context.userId })
+      .upsert({ id: context.userId }, { onConflict: "id" })
       .select("*")
       .maybeSingle();
     if (insErr) throw new Error(insErr.message);
@@ -28,7 +29,13 @@ export const updateMyProfile = createServerFn({ method: "POST" })
     avatar_url: z.string().url().optional().nullable(),
   }).parse(d))
   .handler(async ({ context, data }) => {
-    const { data: row, error } = await context.supabase.from("profiles").upsert({ id: context.userId, ...data }).eq("id", context.userId).select("*").maybeSingle();
+    // upsert via admin (RLS não tem policy de INSERT em profiles)
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: row, error } = await supabaseAdmin
+      .from("profiles")
+      .upsert({ id: context.userId, ...data }, { onConflict: "id" })
+      .select("*")
+      .maybeSingle();
     if (error) throw new Error(error.message);
     return row;
   });
