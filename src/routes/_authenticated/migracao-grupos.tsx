@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { UsersRound, Play, Pause, X, Zap, Loader2, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -56,12 +56,18 @@ function Page() {
     [migrations],
   );
   const tickFn = useServerFn(tickMyMigrations);
+  const autoTickInFlight = useRef(false);
   useEffect(() => {
     if (!hasRunning) return;
     let stopped = false;
     const run = async () => {
-      try { await tickFn(); } catch { /* silencioso */ }
-      if (!stopped) qc.invalidateQueries({ queryKey: ["group-migrations"] });
+      if (autoTickInFlight.current) return;
+      autoTickInFlight.current = true;
+      try {
+        await tickFn();
+        if (!stopped) qc.invalidateQueries({ queryKey: ["group-migrations"] });
+      } catch { /* silencioso */ }
+      finally { autoTickInFlight.current = false; }
     };
     run();
     const id = setInterval(run, 15_000);
