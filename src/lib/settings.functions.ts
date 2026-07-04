@@ -8,10 +8,11 @@ export const getMyProfile = createServerFn({ method: "GET" })
     const { data, error } = await context.supabase.from("profiles").select("*").eq("id", context.userId).maybeSingle();
     if (error) throw new Error(error.message);
     if (data) return data;
-    // Auto-cria o profile se ainda não existe
-    const { data: created, error: insErr } = await context.supabase
+    // Auto-cria o profile se ainda não existe (usa admin client — RLS não tem policy de INSERT)
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: created, error: insErr } = await supabaseAdmin
       .from("profiles")
-      .insert({ id: context.userId })
+      .upsert({ id: context.userId }, { onConflict: "id" })
       .select("*")
       .maybeSingle();
     if (insErr) throw new Error(insErr.message);
