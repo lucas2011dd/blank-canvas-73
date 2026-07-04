@@ -79,26 +79,16 @@ export const runScheduledNow = createServerFn({ method: "POST" })
     if (!conn) throw new Error("Conexão não encontrada");
     const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
 
-    const { evolution, isPairingLostEvolutionError, isTransientEvolutionError, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const { evolution, isPairingLostEvolutionError, isTransientEvolutionError } = await import("@/lib/evolution.server");
     const { markConnectionReauthRequired, REAUTH_REQUIRED_MESSAGE } = await import("@/lib/automation-safety.server");
-    const resolved = await resolveEvolutionStatus(instance);
-    if (resolved.status !== "online") {
-      if (isPairingLostEvolutionError(resolved.state)) {
-        await markConnectionReauthRequired(context.supabase, {
-          connectionId: conn.id,
-          userId: context.userId,
-          instanceName: instance,
-          reason: resolved.state ?? "device_removed",
-        });
-        throw new Error(REAUTH_REQUIRED_MESSAGE);
-      }
+    if (conn.status !== "online") {
       await context.supabase.from("connections").update({
         status: "connecting",
         last_sync_at: new Date().toISOString(),
         metadata: {
           ...((conn.metadata as Record<string, unknown> | null) ?? {}),
           evolution_instance: instance,
-          evolution_state: resolved.state ?? "scheduled_waiting_for_online",
+          evolution_state: "scheduled_waiting_for_online",
           auto_reconnect_at: new Date().toISOString(),
         },
       }).eq("id", conn.id).eq("user_id", context.userId);
