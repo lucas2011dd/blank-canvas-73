@@ -64,10 +64,59 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         }
 
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-        const { evolution } = await import("@/lib/evolution.server");
 
         const nowIso = new Date().toISOString();
         const summary = { broadcasts: 0, scheduled: 0, errors: 0, webhooks: 0, webhookErrors: 0, reauthPaused: 0 };
+
+        // Faixa prioritária da migração: se existe catch devido, este tick faz
+        // SOMENTE 1 catch e retorna. Antes, o mesmo tick drenava webhooks,
+        // reconciliava conexões, broadcasts e agendamentos ANTES do catch; em
+        // VPS 2 vCPU/4GB isso criava pico exatamente no horário da migração.
+        const migrationPriorityLane = String(process.env.TICK_MIGRATION_PRIORITY_LANE ?? "true").toLowerCase() !== "false";
+        if (migrationPriorityLane) {
+          const { data: dueMigration } = await supabaseAdmin.from("group_migrations")
+            .select("id,connection_id,next_attempt_at")
+            .eq("status", "running")
+            .lte("next_attempt_at", nowIso)
+            .order("next_attempt_at", { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+          if (dueMigration?.id) {
+            const startedAt = new Date();
+            const retryMs = Math.max(300_000, Number(process.env.TICK_MIGRATION_RETRY_MS ?? 300_000));
+            const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
+            console.info(
+              `[tick:migration-catch] PRIORITY_START migration=${dueMigration.id} connection=${dueMigration.connection_id} due=${dueMigration.next_attempt_at ?? "null"} start=${startedAt.toISOString()}`,
+            );
+            try {
+              const result: any = await processGroupMigrationBatch(supabaseAdmin, dueMigration.id);
+              const { data: after } = await supabaseAdmin.from("group_migrations")
+                .select("status,next_attempt_at")
+                .eq("id", dueMigration.id)
+                .maybeSingle();
+              const finishedAt = new Date();
+              const waitMs = after?.next_attempt_at ? Math.max(0, Date.parse(after.next_attempt_at) - finishedAt.getTime()) : null;
+              console.info(
+                `[tick:migration-catch] PRIORITY_END migration=${dueMigration.id} connection=${dueMigration.connection_id} finish=${finishedAt.toISOString()} duration_ms=${finishedAt.getTime() - startedAt.getTime()} next=${after?.next_attempt_at ?? "null"} wait_ms=${waitMs ?? "null"}`,
+              );
+              return Response.json({ ok: true, ...summary, migrations: [result], priorityMigration: true, at: nowIso });
+            } catch (e: any) {
+              summary.errors++;
+              const nextAttemptAt = new Date(Date.now() + retryMs).toISOString();
+              await supabaseAdmin.from("group_migrations").update({
+                last_error: String(e?.message ?? "erro"),
+                next_attempt_at: nextAttemptAt,
+              }).eq("id", dueMigration.id);
+              console.error(
+                `[tick:migration-catch] PRIORITY_ERROR migration=${dueMigration.id} connection=${dueMigration.connection_id} next=${nextAttemptAt} error=${String(e?.message ?? e)}`,
+              );
+              return Response.json({ ok: true, ...summary, migrations: [{ migrationId: dueMigration.id, error: String(e?.message ?? e), nextAttemptAt }], priorityMigration: true, at: nowIso });
+            }
+          }
+        }
+
+        const { evolution } = await import("@/lib/evolution.server");
 
         // -------- Drena fila de webhooks (arquitetura assíncrona) --------
         // O endpoint /webhook/$instance só enfileira em webhook_logs. Aqui
@@ -241,20 +290,17 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           } catch { /* ignora falha transitória */ }
         }
 
-        // Loop com orçamento de tempo — processa quantas ações estiverem
-        // devidas dentro da janela do tick. Assim, quando o usuário configura
-        // min/max_delay_seconds baixos, o disparo NÃO fica preso a 1 msg/min.
+        // Loop com orçamento curto. Em VPS 2 vCPU/4GB, o catch da migração deve
+        // ser estritamente serial e isolado: no máximo 1 catch por tick para
+        // não disputar CPU/RAM/I/O com a Evolution Manager.
         //
         // Ajustáveis via variáveis de ambiente do worker:
-        //   TICK_BUDGET_MS       (default 25000) — tempo máximo por tick
-        //   TICK_RECOVERY_MS     (default 10000) — retry após reconexão
-        //   TICK_MIGRATION_RETRY_MS (default 20000) — retry migração após erro
-        const budgetMs = safeNumberAtLeast(process.env.TICK_BUDGET_MS, 25_000, 5_000);
+        //   TICK_BUDGET_MS       (default 8000) — tempo máximo por tick
+        //   TICK_RECOVERY_MS     (default 15000) — retry após reconexão
+        //   TICK_MIGRATION_RETRY_MS (default 300000) — retry migração após erro
+        const budgetMs = safeNumberAtLeast(process.env.TICK_BUDGET_MS, 8_000, 3_000);
         const recoveryMs = Number(process.env.TICK_RECOVERY_MS ?? 15_000);
-        // CORREÇÃO: migRetryMs aumentado de 20s para 35s.
-        // Após um erro de migração, o Baileys precisa de mais tempo para
-        // estabilizar o WebSocket antes da próxima tentativa de add.
-        const migRetryMs = Number(process.env.TICK_MIGRATION_RETRY_MS ?? 35_000);
+        const migRetryMs = Math.max(300_000, Number(process.env.TICK_MIGRATION_RETRY_MS ?? 300_000));
         const deadline = Date.now() + Math.max(2_000, budgetMs);
         const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
         const migResults: any[] = [];
@@ -272,7 +318,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         }).eq("status", "sending").lt("updated_at", new Date(Date.now() - sendLeaseMs()).toISOString());
 
         let pass = 0;
-        const maxPasses = Number(process.env.TICK_MAX_PASSES ?? 3);
+        const maxPasses = Number(process.env.TICK_MAX_PASSES ?? 1);
         while (Date.now() < deadline && pass < maxPasses) {
           pass++;
           let didWork = false;
@@ -518,25 +564,32 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           if (Date.now() >= deadline) break;
 
           // -------- Migrações de grupo devidas --------
-          const { data: migs } = await supabaseAdmin.from("group_migrations")
-            .select("id,connection_id").eq("status", "running").lte("next_attempt_at", nowIsoPass).limit(5);
+          // Com priority lane ativa, migração roda apenas no topo do tick e
+          // nunca depois de webhooks/envios. Isso elimina acúmulo de trabalho
+          // exatamente antes do catch.
+          const { data: migs } = migrationPriorityLane ? { data: [] } : await supabaseAdmin.from("group_migrations")
+            .select("id,connection_id,next_attempt_at").eq("status", "running").lte("next_attempt_at", nowIsoPass).order("next_attempt_at", { ascending: true }).limit(1);
           for (const m of migs ?? []) {
             if (Date.now() >= deadline) break;
             if (sendConnectionsTouched.has(m.connection_id)) continue;
             if (migrationConnectionsTouched.has(m.connection_id)) continue;
             migrationConnectionsTouched.add(m.connection_id);
             try {
-              const r = await processGroupMigrationBatch(supabaseAdmin, m.id);
+              console.info(`[tick:migration-catch] dispatch migration=${m.id} connection=${m.connection_id} due=${m.next_attempt_at ?? "null"} at=${new Date().toISOString()}`);
+              const r: any = await processGroupMigrationBatch(supabaseAdmin, m.id);
               migResults.push(r);
               if (!r?.skipped) didWork = true;
             } catch (e: any) {
               summary.errors++;
+              const nextAttemptAt = new Date(Date.now() + migRetryMs).toISOString();
+              console.error(`[tick:migration-catch] error migration=${m.id} connection=${m.connection_id} next=${nextAttemptAt} error=${String(e?.message ?? e)}`);
               await supabaseAdmin.from("group_migrations").update({
                 last_error: String(e?.message ?? "erro"),
-                next_attempt_at: new Date(Date.now() + migRetryMs).toISOString(),
+                next_attempt_at: nextAttemptAt,
               }).eq("id", m.id);
               didWork = true;
             }
+            break;
           }
 
           if (!didWork) break;

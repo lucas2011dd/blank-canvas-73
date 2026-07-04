@@ -22,23 +22,60 @@ function automationBatchSize(value: unknown): number {
 }
 
 function automationDelaySeconds(minValue: unknown, maxValue: unknown): number {
-  // CORREÇÃO CRÍTICA (endurecida): floors elevados para 60s / 180s.
-  // Testes de campo mostram que qualquer valor < 60s por add em grupo dispara
-  // device_removed no Baileys. 60-180s é a janela recomendada por operadores
-  // de larga escala. Se o usuário configurou algo menor na UI, sobrescrevemos
-  // silenciosamente pelo floor — priorizamos manter a sessão viva.
-  const minFloor = Math.max(60, Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 60));
-  const maxFloor = Math.max(180, Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 180));
+  // Floors elevados para VPS pequena (2 vCPU/4GB): cada catch chama
+  // /group/updateParticipant, que pode pressionar CPU/RAM do Baileys. O erro
+  // 409 observado é compatível com novo catch chegando enquanto a Evolution
+  // ainda estabilizava o update anterior. Mantemos intervalo humano e longo.
+  const minFloor = Math.max(180, Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 180));
+  const maxFloor = Math.max(300, Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 300));
   const min = Math.max(
-    Number.isFinite(Number(minValue)) ? Number(minValue) : 60,
-    Number.isFinite(minFloor) ? minFloor : 60,
+    Number.isFinite(Number(minValue)) ? Number(minValue) : 180,
+    Number.isFinite(minFloor) ? minFloor : 180,
   );
   const max = Math.max(
-    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 180,
-    Number.isFinite(maxFloor) ? maxFloor : 180,
+    Number.isFinite(Number(maxValue)) ? Number(maxValue) : 300,
+    Number.isFinite(maxFloor) ? maxFloor : 300,
     min,
   );
   return jitter(Math.floor(min), Math.floor(max));
+}
+
+function waitMsUntil(iso?: string | null): number | null {
+  if (!iso) return null;
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return null;
+  return Math.max(0, ts - Date.now());
+}
+
+function compactError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? "erro");
+  return raw.replace(/\s+/g, " ").slice(0, 500);
+}
+
+function httpStatus(error: unknown): number | null {
+  const anyErr = error as any;
+  const direct = Number(anyErr?.status ?? anyErr?.statusCode ?? anyErr?.code);
+  if (Number.isFinite(direct)) return direct;
+  const text = typeof error === "object" && error !== null
+    ? JSON.stringify(error, Object.getOwnPropertyNames(error))
+    : String(error ?? "");
+  const match = text.match(/\b(409|408|401|428|429|500|503|515)\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function isAlreadyInGroupConflict(error: unknown): boolean {
+  const haystack = typeof error === "object" && error !== null
+    ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
+    : String(error ?? "").toLowerCase();
+  return (
+    haystack.includes("already") ||
+    haystack.includes("exists") ||
+    haystack.includes("duplicate") ||
+    haystack.includes("já") ||
+    haystack.includes("ja ") ||
+    haystack.includes("participante existente") ||
+    haystack.includes("already_in_group")
+  );
 }
 
 
@@ -213,7 +250,7 @@ async function updateMigrationSafe(supabase: any, migrationId: string, patch: Re
 // da mesma conexão WhatsApp precisam ir em fila serial — caso contrário
 // ambas chamariam addGroupParticipants na mesma instância simultaneamente,
 // dobrando a taxa real e anulando o delay anti-restrição.
-const LOCK_TTL_MS = 180_000; // cobre addGroupParticipants (30s), DB, retries e jitter sem liberar concorrência
+const LOCK_TTL_MS = 600_000; // cobre travamentos/overload do Baileys sem liberar concorrência prematuramente
 
 async function acquireConnectionLock(supabase: any, connectionId: string): Promise<string | null> {
   const nowIso = new Date().toISOString();
@@ -375,11 +412,17 @@ async function handleSessionDrop(
 
 
 
-export async function processGroupMigrationBatch(supabase: any, migrationId: string, userIdScope?: string) {
+export async function processGroupMigrationBatch(supabase: any, migrationId: string, userIdScope?: string): Promise<any> {
+  const catchStartedAt = new Date();
+  let catchMig: any = null;
+  let catchResult: any = null;
+  let catchError: unknown = null;
+
   // Precisamos do connection_id antes de pegar a trava — carrega a migração primeiro.
   let q = supabase.from("group_migrations").select("*").eq("id", migrationId);
   if (userIdScope) q = q.eq("user_id", userIdScope);
   const { data: mig } = await q.maybeSingle();
+  catchMig = mig;
   if (!mig) throw new Error("Migração não encontrada");
   if (mig.status !== "running" && mig.status !== "pending") {
     return { migrationId, skipped: true, reason: `status=${mig.status}` };
@@ -388,10 +431,26 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
 
   const lockUntil = await acquireConnectionLock(supabase, mig.connection_id);
   if (!lockUntil) {
+    console.info(`[migration-catch] SKIP locked migration=${migrationId} connection=${mig.connection_id} at=${new Date().toISOString()}`);
     return { migrationId, skipped: true, reason: "locked_by_concurrent_process" };
   }
 
   try {
+    console.info(
+      `[migration-catch] START migration=${migrationId} connection=${mig.connection_id} scheduled=${mig.next_attempt_at ?? "null"} start=${catchStartedAt.toISOString()}`,
+    );
+    await auditLog(supabase, {
+      userId: mig.user_id,
+      action: "migration_catch_start",
+      entity: "group_migration",
+      entityId: migrationId,
+      metadata: {
+        connection_id: mig.connection_id,
+        scheduled_at: mig.next_attempt_at ?? null,
+        started_at: catchStartedAt.toISOString(),
+        trigger: userIdScope ? "user_scoped" : "automatic_tick",
+      },
+    });
     let freshQuery = supabase.from("group_migrations").select("*").eq("id", migrationId);
     if (userIdScope) freshQuery = freshQuery.eq("user_id", userIdScope);
     const { data: freshMig } = await freshQuery.maybeSingle();
@@ -400,8 +459,51 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       return { migrationId, skipped: true, reason: `status_changed_after_lock=${freshMig.status}` };
     }
     if (!freshMig.target_group_jid) throw new Error("Grupo destino ausente");
-    return await _processGroupMigrationBatchInner(supabase, freshMig);
+    catchMig = freshMig;
+    catchResult = await _processGroupMigrationBatchInner(supabase, freshMig);
+    return catchResult;
+  } catch (error) {
+    catchError = error;
+    throw error;
   } finally {
+    try {
+      const finishedAt = new Date();
+      const durationMs = finishedAt.getTime() - catchStartedAt.getTime();
+      const { data: after } = await supabase.from("group_migrations")
+        .select("status,next_attempt_at,last_error,added_count,failed_count,skipped_count,total")
+        .eq("id", migrationId)
+        .maybeSingle();
+      const nextAttemptAt = after?.next_attempt_at ?? null;
+      const waitMs = waitMsUntil(nextAttemptAt);
+      const outcome = catchError ? "error" : ((catchResult as any)?.skipped ? "skipped" : "ok");
+      console.info(
+        `[migration-catch] END migration=${migrationId} connection=${mig.connection_id} outcome=${outcome} finish=${finishedAt.toISOString()} duration_ms=${durationMs} next=${nextAttemptAt ?? "null"} wait_ms=${waitMs ?? "null"}`,
+      );
+      await auditLog(supabase, {
+        userId: catchMig?.user_id ?? mig.user_id,
+        action: "migration_catch_finish",
+        entity: "group_migration",
+        entityId: migrationId,
+        metadata: {
+          connection_id: mig.connection_id,
+          outcome,
+          started_at: catchStartedAt.toISOString(),
+          finished_at: finishedAt.toISOString(),
+          duration_ms: durationMs,
+          next_attempt_at: nextAttemptAt,
+          wait_ms: waitMs,
+          status: after?.status ?? null,
+          counters: after ? {
+            added: after.added_count ?? 0,
+            failed: after.failed_count ?? 0,
+            skipped: after.skipped_count ?? 0,
+            total: after.total ?? 0,
+          } : null,
+          result: catchResult ?? null,
+          error: catchError ? compactError(catchError) : null,
+        },
+      });
+    } catch { /* logging must never block lock release */ }
     await releaseConnectionLock(supabase, mig.connection_id, lockUntil);
   }
 }
@@ -512,10 +614,10 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
         await supabase.from("group_migrations").update({
           failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
-          next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
+          next_attempt_at: new Date(Date.now() + 180_000).toISOString(),
           last_error: sessionRemoved
             ? "Sessão oscilou — reconexão silenciosa ativa, sem recriar instância nem gerar QR automático"
-            : "WhatsApp reconectando sem novo QR — fila retoma sozinha em 30s",
+            : "WhatsApp reconectando sem novo QR — fila retoma sozinha em 180s",
         }).eq("id", mig.id);
         return { migrationId, skipped: true, reason: "connection_offline" };
         }
@@ -528,8 +630,8 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       const requeued = await requeueTransientFailures(supabase, mig.id);
       await supabase.from("group_migrations").update({
         failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
-        next_attempt_at: new Date(Date.now() + 45_000).toISOString(),
-        last_error: "Evolution indisponível — tentando reconectar sem novo QR em 45s",
+        next_attempt_at: new Date(Date.now() + 180_000).toISOString(),
+        last_error: "Evolution indisponível — tentando reconectar sem novo QR em 180s",
       }).eq("id", mig.id);
       return { migrationId, skipped: true, reason: "connection_offline" };
       }
@@ -544,7 +646,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   const lastAddedAt = (mig.metadata as any)?.last_batch_at
     ? new Date((mig.metadata as any).last_batch_at).getTime()
     : 0;
-  const minIntervalMs = Math.max(60_000, Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 60_000));
+  const minIntervalMs = Math.max(180_000, Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 180_000));
   const elapsed = Date.now() - lastAddedAt;
   if (elapsed < minIntervalMs) {
     const waitMs = Math.max(1_000, minIntervalMs - elapsed);
@@ -570,7 +672,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     return { migrationId, skipped: true, reason: "rate_limited", nextAttemptAt };
   }
 
-  const requeued = await requeueTransientFailures(supabase, mig.id);
+  const requeued = (mig.failed_count ?? 0) > 0 ? await requeueTransientFailures(supabase, mig.id) : 0;
   const effectiveFailedCount = Math.max(0, (mig.failed_count ?? 0) - requeued);
 
   const effectiveBatchSize = automationBatchSize(mig.batch_size);
@@ -708,6 +810,59 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       }
     }
   } catch (e: any) {
+    if (httpStatus(e) === 409) {
+      const conflictMessage = compactError(e);
+      if (isAlreadyInGroupConflict(e) && batch.length === 1) {
+        const only = batch[0];
+        const expectedPhone = sendPhoneFor(only.phone);
+        const { error } = await supabase.from("group_migration_targets").update({
+          phone: expectedPhone,
+          jid: `${expectedPhone}@s.whatsapp.net`,
+          status: "skipped",
+          error: "409/already_in_group — alvo já estava no grupo",
+        }).eq("id", only.id).eq("status", "pending");
+        if (error) throw new Error(error.message);
+        skipped++;
+      } else {
+        // 409 sem texto explícito de "já está no grupo" indica conflito de
+        // operação ainda em andamento na Evolution/Baileys. A causa raiz do
+        // pico era tratar isso como erro comum e deixar o cron voltar rápido.
+        // Mantemos o alvo pending, não reconectamos WhatsApp e aplicamos
+        // backoff longo/exponencial antes do próximo catch.
+        const consecutive = Number((mig.metadata as any)?.consecutive_conflict_failures ?? 0);
+        const baseMs = Math.max(300_000, Number(process.env.MIGRATION_CONFLICT_BACKOFF_MS ?? 300_000));
+        const capMs = Math.max(baseMs, Number(process.env.MIGRATION_CONFLICT_BACKOFF_CAP_MS ?? 1_800_000));
+        const retryDelayMs = Math.min(baseMs * (2 ** consecutive), capMs);
+        const nextConsecutive = consecutive + 1;
+        const nextAttemptAt = new Date(Date.now() + retryDelayMs).toISOString();
+        await updateMigrationSafe(supabase, mig.id, {
+          status: "running",
+          failed_count: effectiveFailedCount,
+          next_attempt_at: nextAttemptAt,
+          last_error: `Evolution retornou HTTP 409 (conflito/ação ainda em andamento). Próximo catch em ${Math.round(retryDelayMs / 1000)}s; nenhum retry imediato foi disparado.`,
+          metadata: {
+            ...((mig.metadata as Record<string, unknown>) ?? {}),
+            consecutive_conflict_failures: nextConsecutive,
+            last_conflict_at: new Date().toISOString(),
+            last_conflict_error: conflictMessage,
+          },
+        });
+        await auditLog(supabase, {
+          userId: mig.user_id,
+          action: "migration_conflict_backoff",
+          entity: "group_migration",
+          entityId: mig.id,
+          metadata: {
+            connection_id: mig.connection_id,
+            retry_delay_ms: retryDelayMs,
+            next_attempt_at: nextAttemptAt,
+            consecutive_conflicts: nextConsecutive,
+            error: conflictMessage,
+          },
+        });
+        return { migrationId, added: 0, failed: 0, skipped: 0, done: false, conflictBackoff: true, nextAttemptAt };
+      }
+    } else
     if (hasExplicitPairingLossText(e) && (isPairingLostEvolutionError(e) || isLoggedOutEvolutionError(e))) {
       // Não pausa de cara: usa handleSessionDrop (restart + backoff).
       // Só marca reauth_required após MIGRATION_MAX_SESSION_DROPS quedas
@@ -727,11 +882,11 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     if (isTransientEvolutionError(e) || isAuthLikeTransientDuringMigration(e)) {
       // CORREÇÃO (item 6): backoff EXPONENCIAL para falhas transientes.
       // Antes: delay fixo (30s) independente de quantas falhas seguidas.
-      // Agora: 30s → 60s → 120s → 240s (teto 5min), com contador em
+      // Agora: 5min → 10min → 20min (teto 30min), com contador em
       // metadata.consecutive_transient_failures. É resetado para 0 no
       // update final quando o batch tem sucesso (bloco abaixo).
-      const baseMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_MS ?? 30_000);
-      const capMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_CAP_MS ?? 300_000);
+      const baseMs = Math.max(300_000, Number(process.env.MIGRATION_TRANSIENT_RETRY_MS ?? 300_000));
+      const capMs = Math.max(baseMs, Number(process.env.MIGRATION_TRANSIENT_RETRY_CAP_MS ?? 1_800_000));
       const consecutive = Number((mig.metadata as any)?.consecutive_transient_failures ?? 0);
       const retryDelayMs = Math.min(baseMs * (2 ** consecutive), capMs);
       const nextConsecutive = consecutive + 1;
@@ -783,6 +938,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     last_batch_at: new Date().toISOString(),
   };
   if (hadProgress) nextMeta.consecutive_transient_failures = 0;
+  if (hadProgress) nextMeta.consecutive_conflict_failures = 0;
 
   await updateMigrationSafe(supabase, mig.id, {
     status: done ? "completed" : "running",

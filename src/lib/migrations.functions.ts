@@ -117,15 +117,9 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     // (automationBatchSize) já força 1 — deixar 10 aqui só engana a UI e
     // reabre o risco de device_removed se alguém remover o clamp do worker.
     batchSize: z.number().int().min(1).max(1).default(1),
-    // CORREÇÃO: Defaults de delay aumentados de 15/30s para 25/60s.
-    // O WhatsApp detecta padrões de adição em grupo muito rápidos como spam
-    // e desconecta a sessão com device_removed. Intervalos mais longos
-    // simulam comportamento humano e evitam a desconexão.
-    // Defaults CONSERVADORES anti-ban: 60s..180s por adição.
-    // O WhatsApp/Baileys marca a sessão como suspeita quando adds em grupo
-    // acontecem em < 60s. Menor que isso e o próximo add derruba a sessão.
-    minDelaySeconds: z.number().int().min(1).max(3600).default(60),
-    maxDelaySeconds: z.number().int().min(1).max(3600).default(180),
+    // Defaults conservadores para VPS 2 vCPU/4GB: cada catch pesa na Evolution.
+    minDelaySeconds: z.number().int().min(1).max(3600).default(180),
+    maxDelaySeconds: z.number().int().min(1).max(3600).default(300),
     excludePhones: z.array(z.string()).default([]),
     skipAdmins: z.boolean().default(true),
     skipSelf: z.boolean().default(true),
@@ -249,12 +243,12 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       status: allPhones.length === initialAdded.length ? "completed" : "running",
       started_at: new Date().toISOString(),
       finished_at: allPhones.length === initialAdded.length ? new Date().toISOString() : null,
-      // CORREÇÃO (item 4, endurecida): o primeiro batch NUNCA roda de imediato.
+      // CORREÇÃO (item 4, endurecida): o primeiro catch NUNCA roda de imediato.
       // Vale tanto para new_group (respiro após criação) quanto para
       // existing_group (evita rajada logo após o insert). Sempre aplicamos o
       // min_delay configurado (com floor de 60s pelo automationDelaySeconds).
       next_attempt_at: allPhones.length > initialAdded.length
-        ? new Date(Date.now() + Math.max(60_000, (Number(data.minDelaySeconds) || 60) * 1000)).toISOString()
+        ? new Date(Date.now() + Math.max(180_000, (Number(data.minDelaySeconds) || 180) * 1000)).toISOString()
         : new Date().toISOString(),
     }).select("*").single();
     if (mErr) throw new Error(mErr.message);
@@ -335,7 +329,7 @@ export const runGroupMigrationNow = createServerFn({ method: "POST" })
     // adds na mesma chamada mantém o Worker prendendo a Evolution e costuma
     // derrubar o stream entre o primeiro e o segundo participante.
     const result = await processGroupMigrationBatch(supabaseAdmin, data.id, context.userId);
-    return { ...result, batchesProcessed: 1 };
+    return { ...(typeof result === "object" && result !== null ? result : { result }), batchesProcessed: 1 };
   });
 
 // Auto-tick por usuário: chamado pelo painel de Migração de Grupos enquanto
