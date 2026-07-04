@@ -138,7 +138,9 @@ function stableSettings() {
     rejectCall: false,
     msgCall: "",
     groupsIgnore: false,
-    alwaysOnline: true,
+    // Evita presença permanente e tráfego desnecessário no Baileys/Evolution.
+    // O app depende de webhooks/status explícitos, não de manter presença online.
+    alwaysOnline: false,
     readMessages: false,
     readStatus: false,
     // Full-history do Baileys costuma gerar cargas enormes logo após o QR e

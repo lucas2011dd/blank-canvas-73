@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { UsersRound, Play, Pause, X, Zap, Loader2, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,24 +15,13 @@ import { supabase } from "@/integrations/supabase/client";
 import { listConnections, listWhatsappGroups } from "@/lib/connections.functions";
 import {
   controlGroupMigration, listGroupMigrations, previewGroupParticipants,
-  runGroupMigrationNow, startGroupMigration, tickMyMigrations,
+  runGroupMigrationNow, startGroupMigration,
 } from "@/lib/migrations.functions";
 
 import { BrGeoFilter } from "@/components/br-geo-filter";
 
 const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
 const migQ = queryOptions({ queryKey: ["group-migrations"], queryFn: () => listGroupMigrations() });
-const AUTO_TICK_LEASE_KEY = "connecthub:group-migration-auto-tick";
-
-function readAutoTickLease() {
-  try {
-    const raw = window.localStorage.getItem(AUTO_TICK_LEASE_KEY);
-    return raw ? JSON.parse(raw) as { owner?: string; expiresAt?: number } : null;
-  } catch {
-    window.localStorage.removeItem(AUTO_TICK_LEASE_KEY);
-    return null;
-  }
-}
 
 export const Route = createFileRoute("/_authenticated/migracao-grupos")({
   head: () => ({ meta: [{ title: "Migração de Grupos — ConnectHub" }] }),
@@ -58,43 +47,6 @@ function Page() {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [qc]);
-
-  // Auto-tick client-side: enquanto houver migração "running", dispara o
-  // worker do usuário a cada 15s para que os batches avancem sozinhos sem
-  // depender de cron externo nem de cliques manuais em "Iniciar/Batch agora".
-  const hasRunning = useMemo(
-    () => (migrations ?? []).some((m: any) => m.status === "running"),
-    [migrations],
-  );
-  const tickFn = useServerFn(tickMyMigrations);
-  const autoTickInFlight = useRef(false);
-  const autoTickTabId = useRef(typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Math.random()));
-  useEffect(() => {
-    if (!hasRunning) return;
-    let stopped = false;
-    const run = async () => {
-      if (autoTickInFlight.current) return;
-      const now = Date.now();
-      const lease = readAutoTickLease();
-      if (lease?.owner && lease.owner !== autoTickTabId.current && Number(lease.expiresAt ?? 0) > now) return;
-      window.localStorage.setItem(AUTO_TICK_LEASE_KEY, JSON.stringify({ owner: autoTickTabId.current, expiresAt: now + 45_000 }));
-      autoTickInFlight.current = true;
-      try {
-        await tickFn();
-        if (!stopped) qc.invalidateQueries({ queryKey: ["group-migrations"] });
-      } catch { /* silencioso */ }
-      finally { autoTickInFlight.current = false; }
-    };
-    run();
-    const id = setInterval(run, 30_000);
-    return () => {
-      stopped = true;
-      clearInterval(id);
-      const lease = readAutoTickLease();
-      if (lease?.owner === autoTickTabId.current) window.localStorage.removeItem(AUTO_TICK_LEASE_KEY);
-    };
-  }, [hasRunning, tickFn, qc]);
-
 
   const onlineConns = useMemo(
     () => connections.filter((c: any) => c.provider === "whatsapp" && c.status === "online"),
@@ -344,9 +296,9 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
         <BrGeoFilter states={filterStates} setStates={setFilterStates} ddds={filterDdds} setDdds={setFilterDdds} />
 
         <p className="text-xs text-muted-foreground">
-          <b>Automático:</b> com o painel aberto, os batches avançam sozinhos; com cron externo, rodam 24/7.
+          O processamento automático deve rodar pelo cron externo; o painel não dispara batches em loop para não sobrecarregar a Evolution.
           Adiciona com ritmo seguro: 1 contato por chamada real, delay {minDelay}–{maxDelay}s entre cada adição.
-          <b> Recomendado: mínimo 25s, máximo 60s</b> para evitar que o WhatsApp detecte como spam e desconecte a sessão.
+          <b> Recomendado: mínimo 60s, máximo 180s</b> para evitar que o WhatsApp detecte como spam e desconecte a sessão.
         </p>
       </div>
       <DialogFooter>

@@ -16,7 +16,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
   createConnection, deleteConnection, disconnectConnection, listConnections,
-  reconnectConnection, refreshConnectionStatus, syncWhatsappConnection,
+  reconnectConnection, syncWhatsappConnection,
   listWhatsappGroups, toggleGroupMonitored, pollWhatsappQr,
   listEvolutionInstances, attachEvolutionInstance, removeEvolutionInstance, wipeConnections,
 } from "@/lib/connections.functions";
@@ -151,7 +151,6 @@ function Page() {
     },
     onError: (e) => toast.error(e.message),
   });
-  const refresh = useServerFn(refreshConnectionStatus);
   const pollQr = useServerFn(pollWhatsappQr);
 
   // Auto-abre o QR quando ele chega (via webhook/realtime OU via polling).
@@ -186,7 +185,7 @@ function Page() {
       qc.invalidateQueries({ queryKey: ["connections"] });
     };
     tick();
-    const t = setInterval(tick, 2000);
+    const t = setInterval(tick, 8000);
     // Timeout de segurança — para depois de 90s.
     const stop = setTimeout(() => {
       stopped = true;
@@ -196,19 +195,6 @@ function Page() {
     return () => { stopped = true; clearInterval(t); clearTimeout(stop); };
   }, [awaitingQr, pollQr, qc]);
 
-
-  // Poll status real para conexões WhatsApp ativas/em pareamento; se o celular
-  // remover o aparelho e o webhook atrasar, a tela corrige sozinha.
-  useEffect(() => {
-    const liveWhatsapp = data.filter((c: any) => c.provider === "whatsapp" && c.status !== "offline");
-    if (liveWhatsapp.length === 0) return;
-    const t = setInterval(async () => {
-      await Promise.all(liveWhatsapp.map((c: any) => refresh({ data: { id: c.id } }).catch(() => null)));
-      qc.invalidateQueries({ queryKey: ["connections"] });
-    }, 20000);
-
-    return () => clearInterval(t);
-  }, [data, qc, refresh]);
 
   // Realtime — reage a mudanças na tabela connections sem esperar polling
   useEffect(() => {
@@ -431,7 +417,7 @@ function AdoptDialog({ open, onClose, onQr, defaultLabel }: { open: boolean; onC
     queryKey: ["evolution-instances"],
     queryFn: () => listFn(),
     enabled: open,
-    refetchInterval: open ? 5000 : false,
+    staleTime: 60_000,
   });
   const [selected, setSelected] = useState<string | null>(null);
   const [label, setLabel] = useState(defaultLabel);
