@@ -230,9 +230,6 @@ async function call<T = any>(
     (lastError as any).status = res.status;
     (lastError as any).statusCode = res.status;
     (lastError as any).body = json ?? text;
-    if (!/error code:\s*1003/i.test(lastError.message)) {
-      throw lastError;
-    }
   }
 
   throw lastError ?? new Error("Falha ao chamar Evolution API");
@@ -307,7 +304,7 @@ export const evolution = {
     let lastError: unknown = null;
     for (const method of ["POST", "PUT", "GET"] as const) {
       try {
-        return await call(path, { method, timeoutMs: 20_000 });
+        return await call(path, { method, timeoutMs: 5_000 });
       } catch (error) {
         lastError = error;
       }

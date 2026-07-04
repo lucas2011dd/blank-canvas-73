@@ -17,7 +17,8 @@ export const listContacts = createServerFn({ method: "GET" })
   .inputValidator((d: unknown) => listInput.parse(d ?? {}))
   .handler(async ({ context, data }) => {
     let q = context.supabase.from("contacts").select("*").eq("user_id", context.userId).order("name");
-    if (data.search) q = q.or(`name.ilike.%${data.search}%,phone.ilike.%${data.search}%,email.ilike.%${data.search}%,company.ilike.%${data.search}%`);
+    const safeSearch = data.search?.replace(/[,().]/g, " ").trim();
+    if (safeSearch) q = q.or(`name.ilike.%${safeSearch}%,phone.ilike.%${safeSearch}%,email.ilike.%${safeSearch}%,company.ilike.%${safeSearch}%`);
     const { data: rows, error } = await q.limit(500);
     if (error) throw new Error(error.message);
     return rows ?? [];

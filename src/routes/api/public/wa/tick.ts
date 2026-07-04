@@ -259,7 +259,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         //   TICK_BUDGET_MS       (default 25000) — tempo máximo por tick
         //   TICK_RECOVERY_MS     (default 10000) — retry após reconexão
         //   TICK_MIGRATION_RETRY_MS (default 20000) — retry migração após erro
-        const budgetMs = Number(process.env.TICK_BUDGET_MS ?? 8_000);
+        const budgetMs = Math.max(55_000, Number(process.env.TICK_BUDGET_MS ?? 55_000));
         const recoveryMs = Number(process.env.TICK_RECOVERY_MS ?? 15_000);
         // CORREÇÃO: migRetryMs aumentado de 20s para 35s.
         // Após um erro de migração, o Baileys precisa de mais tempo para
@@ -291,7 +291,8 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           // -------- Broadcasts em execução --------
           const { data: running } = await supabaseAdmin.from("broadcasts")
             .select("id,user_id,connection_id,template,min_delay_seconds,max_delay_seconds,sent_count,failed_count")
-            .eq("status", "running");
+            .eq("status", "running")
+            .limit(20);
 
           for (const bc of running ?? []) {
             if (Date.now() >= deadline) break;

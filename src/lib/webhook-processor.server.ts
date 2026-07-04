@@ -321,6 +321,11 @@ export async function drainWebhookQueue(
 
   while (Date.now() < deadline && processed + failed < limit) {
     const nowIso = new Date().toISOString();
+    await admin.from("webhook_logs")
+      .update({ status: "pending" })
+      .eq("status", "processing")
+      .lte("next_attempt_at", nowIso);
+
     const { data: rows } = await admin.from("webhook_logs")
       .select("id,instance_name,event,payload,attempts")
       .eq("status", "pending")
@@ -332,7 +337,7 @@ export async function drainWebhookQueue(
     for (const selected of rows) {
       if (Date.now() >= deadline) break;
       const { data: row } = await admin.from("webhook_logs")
-        .update({ status: "processing" })
+        .update({ status: "processing", next_attempt_at: new Date(Date.now() + 120_000).toISOString() })
         .eq("id", selected.id)
         .eq("status", "pending")
         .lte("next_attempt_at", nowIso)
@@ -340,7 +345,8 @@ export async function drainWebhookQueue(
         .maybeSingle();
       if (!row) continue;
       try {
-        await handleEvent(admin, row.instance_name, row.event, row.payload);
+        const eventData = (row.payload as any)?.data ?? row.payload;
+        await handleEvent(admin, row.instance_name, row.event, eventData);
         await admin.from("webhook_logs").update({
           status: "done",
           processed_at: new Date().toISOString(),

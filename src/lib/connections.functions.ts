@@ -757,11 +757,17 @@ export const disconnectConnection = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
+    const { data: existing } = await context.supabase.from("connections")
+      .select("id,metadata")
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    const name = existing ? instanceNameFromConnection(existing) : instanceNameFor(data.id);
     try {
       const { evolution } = await import("@/lib/evolution.server");
       // AUDIT: logout INTENCIONAL — usuário clicou em "Desconectar" na UI.
       // Automações (watchdog, tick, reconnect) usam evolution.restart(), nunca logout.
-      await evolution.logout(instanceNameFor(data.id)).catch(() => null);
+      await evolution.logout(name).catch(() => null);
     } catch { /* ignore */ }
     // Marca como desconexão manual — a partir daqui os loops automáticos NÃO
     // devem tentar reconectar essa instância até o usuário clicar em Conectar.

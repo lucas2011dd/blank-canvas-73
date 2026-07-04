@@ -42,7 +42,7 @@ export const listUsers = createServerFn({ method: "GET" })
 
 export const createUser = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: { email: string; password: string; full_name: string; role: "admin" | "user" }) =>
+  .inputValidator((d: unknown) =>
     z
       .object({
         email: z.string().email().max(255),
@@ -78,7 +78,7 @@ export const createUser = createServerFn({ method: "POST" })
 
 export const setUserActive = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: { user_id: string; is_active: boolean }) =>
+  .inputValidator((d: unknown) =>
     z.object({ user_id: z.string().uuid(), is_active: z.boolean() }).parse(d),
   )
   .handler(async ({ data, context }) => {
@@ -105,7 +105,7 @@ export const setUserActive = createServerFn({ method: "POST" })
 
 export const setUserRole = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: { user_id: string; role: "admin" | "user" }) =>
+  .inputValidator((d: unknown) =>
     z.object({ user_id: z.string().uuid(), role: z.enum(["admin", "user"]) }).parse(d),
   )
   .handler(async ({ data, context }) => {
@@ -127,7 +127,7 @@ export const setUserRole = createServerFn({ method: "POST" })
 
 export const resetUserPassword = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: { user_id: string; password: string }) =>
+  .inputValidator((d: unknown) =>
     z.object({ user_id: z.string().uuid(), password: z.string().min(8).max(72) }).parse(d),
   )
   .handler(async ({ data, context }) => {
@@ -148,7 +148,7 @@ export const resetUserPassword = createServerFn({ method: "POST" })
 
 export const deleteUser = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: { user_id: string }) => z.object({ user_id: z.string().uuid() }).parse(d))
+  .inputValidator((d: unknown) => z.object({ user_id: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
     await ensureAdmin(context);
     if (data.user_id === context.userId) throw new Error("Não pode excluir a si mesmo");

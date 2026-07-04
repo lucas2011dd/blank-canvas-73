@@ -173,7 +173,7 @@ async function requeueTransientFailures(supabase: any, migrationId: string) {
     .select("id,error")
     .eq("migration_id", migrationId)
     .eq("status", "failed")
-    .or("error.ilike.%Connection Closed%,error.ilike.%Connection Close%,error.ilike.%timeout%,error.ilike.%socket%,error.ilike.%stream:error%,error.ilike.%not connected%,error.eq.");
+    .or("error.ilike.%Connection Closed%,error.ilike.%Connection Close%,error.ilike.%timeout%,error.ilike.%socket%,error.ilike.%stream:error%,error.ilike.%not connected%,error.eq.,error.is.null");
 
   if (!failedRows?.length) return 0;
 
@@ -213,7 +213,7 @@ async function updateMigrationSafe(supabase: any, migrationId: string, patch: Re
 // da mesma conexão WhatsApp precisam ir em fila serial — caso contrário
 // ambas chamariam addGroupParticipants na mesma instância simultaneamente,
 // dobrando a taxa real e anulando o delay anti-restrição.
-const LOCK_TTL_MS = 55_000; // 55s > budget do tick (25s), evita lock eterno em crash
+const LOCK_TTL_MS = 180_000; // cobre addGroupParticipants (30s), DB, retries e jitter sem liberar concorrência
 
 async function acquireConnectionLock(supabase: any, connectionId: string): Promise<string | null> {
   const nowIso = new Date().toISOString();
@@ -627,6 +627,9 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     const phonesToSend = phones.map(sendPhoneFor);
     const res = await evolution.addGroupParticipants(instance, mig.target_group_jid, phonesToSend);
     const list = Array.isArray(res) ? res : (res?.updateParticipants ?? res?.participants ?? res?.data ?? []);
+    if (!Array.isArray(list) || list.length === 0) {
+      throw new Error("timeout: resposta vazia da Evolution ao adicionar participante; retentando sem marcar como adicionado");
+    }
     const byPhone: Record<string, any> = {};
     for (const item of list) {
       const phone = participantPhone(item);
@@ -654,25 +657,10 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         await supabase.from("group_migration_targets").update({ status: "skipped", error: rawStatus }).eq("id", t.id);
         skipped++;
       } else {
-        // CORREÇÃO: Se a API não retornou o participante na lista de resposta
-        // (byPhone vazio ou sem match), não marcar como falha imediatamente.
-        // A Evolution v2 às vezes retorna lista vazia mesmo em sucesso.
-        // Marcar como "added" com nota de incerteza é mais seguro que falhar.
-        if (!resolvedIt && list.length === 0) {
-          // Resposta vazia: assumir sucesso (comportamento observado na Evolution v2),
-          // mas deixando rastro visível para revisão/auditoria em produção.
-          await supabase.from("group_migration_targets").update({
-            status: "added", phone: expectedPhone, jid: `${expectedPhone}@s.whatsapp.net`,
-            added_at: new Date().toISOString(),
-            error: "resposta_vazia_presumido_sucesso",
-          }).eq("id", t.id);
-          added++;
-        } else {
-          const err = String(resolvedIt?.message || rawStatus || "não entrou no grupo (privacidade/bloqueio/não é WhatsApp)");
-          await supabase.from("group_migration_targets").update({ phone: expectedPhone, jid: `${expectedPhone}@s.whatsapp.net`, status: "failed", error: err }).eq("id", t.id);
-          failed++;
-          errors[t.phone] = err;
-        }
+        const err = String(resolvedIt?.message || rawStatus || "não entrou no grupo (privacidade/bloqueio/não é WhatsApp)");
+        await supabase.from("group_migration_targets").update({ phone: expectedPhone, jid: `${expectedPhone}@s.whatsapp.net`, status: "failed", error: err }).eq("id", t.id);
+        failed++;
+        errors[t.phone] = err;
       }
     }
   } catch (e: any) {

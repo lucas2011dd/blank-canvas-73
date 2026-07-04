@@ -54,6 +54,11 @@ export const previewGroupParticipants = createServerFn({ method: "POST" })
       .select("id,status,metadata").eq("id", data.connectionId).eq("user_id", context.userId).maybeSingle();
     if (!conn) throw new Error("Conexão não encontrada");
     if (conn.status !== "online") throw new Error("Conexão precisa estar online");
+    const { count: activeOnConnection } = await context.supabase.from("group_migrations")
+      .select("id", { count: "exact", head: true })
+      .eq("connection_id", data.connectionId)
+      .in("status", ["running", "pending"]);
+    if ((activeOnConnection ?? 0) > 0) throw new Error("Já existe uma migração em andamento nessa conexão");
     const instance = (conn.metadata as any)?.evolution_instance ?? instanceNameFor(conn.id);
     const { evolution } = await import("@/lib/evolution.server");
     const parts = await evolution.groupParticipants(instance, data.sourceGroupJid);
@@ -263,7 +268,28 @@ export const controlGroupMigration = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const patch: Record<string, unknown> = {};
     if (data.action === "pause") patch.status = "paused";
-    if (data.action === "resume") { patch.status = "running"; patch.next_attempt_at = new Date().toISOString(); }
+    if (data.action === "resume") {
+      patch.status = "running";
+      patch.next_attempt_at = new Date().toISOString();
+      patch.last_error = null;
+
+      const { data: mig } = await context.supabase.from("group_migrations")
+        .select("connection_id").eq("id", data.id).eq("user_id", context.userId).maybeSingle();
+      if (mig?.connection_id) {
+        const { data: conn } = await context.supabase.from("connections")
+          .select("metadata").eq("id", mig.connection_id).eq("user_id", context.userId).maybeSingle();
+        const cleaned: Record<string, unknown> = { ...((conn?.metadata as Record<string, unknown> | null) ?? {}) };
+        delete cleaned.session_drop_count;
+        delete cleaned.last_session_drop_at;
+        delete cleaned.last_session_drop_reason;
+        delete cleaned.pairing_lost_at;
+        delete cleaned.pairing_lost_reason;
+        delete cleaned.device_removed_at;
+        delete cleaned.status_reason;
+        await context.supabase.from("connections").update({ metadata: cleaned })
+          .eq("id", mig.connection_id).eq("user_id", context.userId);
+      }
+    }
     if (data.action === "cancel") { patch.status = "canceled"; patch.finished_at = new Date().toISOString(); }
     const { error } = await context.supabase.from("group_migrations")
       .update(patch).eq("id", data.id).eq("user_id", context.userId);
