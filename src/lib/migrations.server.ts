@@ -328,8 +328,12 @@ async function handleSessionDrop(
     });
   }
 
+  // NÃO mexer em `status` aqui: uma oscilação transiente durante o batch
+  // não deve derrubar a UI para "Conectando"/"Desconectado". A promoção para
+  // reauth_required só acontece no ramo `failCount >= maxFails` acima, após
+  // confirmação viva via resolveEvolutionStatus. Aqui só registramos metadata
+  // de diagnóstico + preservamos auto_reconnect.
   await supabase.from("connections").update({
-    status: conn?.status === "online" ? "online" : "connecting",
     auto_reconnect: true,
     disconnected_manually: false,
     last_sync_at: new Date().toISOString(),
@@ -340,7 +344,7 @@ async function handleSessionDrop(
       last_session_drop_at: new Date().toISOString(),
       last_session_drop_reason: String(reasonStr ?? ""),
       evolution_state: shouldRestart ? "graceful_restart_pending" : "migration_backoff_without_restart",
-      migration_recovery_status_preserved: conn?.status === "online",
+      migration_recovery_status_preserved: true,
       ...(shouldRestart ? { migration_restart_at: new Date().toISOString() } : {}),
     },
   }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
