@@ -21,6 +21,10 @@ function broadcastDelayMs(bc: { min_delay_seconds?: number | null; max_delay_sec
   return delaySec * 1000;
 }
 
+function sendLeaseMs() {
+  return safeNumberAtLeast(process.env.WHATSAPP_SEND_LEASE_MS, 600_000, 120_000);
+}
+
 async function syncBroadcastCounters(db: any, broadcastId: string) {
   const [{ count: sent }, { count: failed }] = await Promise.all([
     db.from("broadcast_targets").select("id", { count: "exact", head: true }).eq("broadcast_id", broadcastId).eq("status", "sent"),
@@ -194,6 +198,11 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
       throw new Error("WhatsApp não está online; disparo mantido na fila sem reiniciar a Evolution");
     }
     const nowIso = new Date().toISOString();
+    await context.supabase.from("broadcast_targets").update({
+      status: "pending",
+      error: "Envio anterior expirou antes de confirmar; reprocessando com segurança",
+    }).eq("broadcast_id", bc.id).eq("status", "sending").lte("next_attempt_at", nowIso);
+
     const { data: due } = await context.supabase.from("broadcast_targets")
       .select("*").eq("broadcast_id", bc.id).eq("status", "pending")
       .lte("next_attempt_at", nowIso).order("next_attempt_at").limit(1);
@@ -201,7 +210,7 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
     const results: Array<{ id: string; ok: boolean; error?: string }> = [];
     for (const selected of due ?? []) {
       const { data: claimed } = await context.supabase.from("broadcast_targets")
-        .update({ status: "sending" })
+        .update({ status: "sending", next_attempt_at: new Date(Date.now() + sendLeaseMs()).toISOString() })
         .eq("id", selected.id)
         .eq("broadcast_id", bc.id)
         .eq("status", "pending")

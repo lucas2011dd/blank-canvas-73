@@ -29,6 +29,10 @@ function broadcastDelayMs(bc: { min_delay_seconds?: number | null; max_delay_sec
   return Math.floor(min + Math.random() * (max - min + 1)) * 1000;
 }
 
+function sendLeaseMs() {
+  return safeNumberAtLeast(process.env.WHATSAPP_SEND_LEASE_MS, 600_000, 120_000);
+}
+
 async function syncBroadcastCounters(db: any, broadcastId: string) {
   const [{ count: sent }, { count: failed }] = await Promise.all([
     db.from("broadcast_targets").select("id", { count: "exact", head: true }).eq("broadcast_id", broadcastId).eq("status", "sent"),
@@ -248,6 +252,16 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const migrationConnectionsTouched = new Set<string>();
         const sendConnectionsTouched = new Set<string>();
 
+        await supabaseAdmin.from("broadcast_targets").update({
+          status: "pending",
+          error: "Lease de envio expirou; alvo reprocessado automaticamente",
+        }).eq("status", "sending").lte("next_attempt_at", nowIso);
+
+        await supabaseAdmin.from("scheduled_messages").update({
+          status: "pending",
+          last_error: "Lease de envio expirou; agendamento reprocessado automaticamente",
+        }).eq("status", "sending").lt("updated_at", new Date(Date.now() - sendLeaseMs()).toISOString());
+
         let pass = 0;
         const maxPasses = Number(process.env.TICK_MAX_PASSES ?? 3);
         while (Date.now() < deadline && pass < maxPasses) {
@@ -301,7 +315,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             }
 
             const { data: claimed } = await supabaseAdmin.from("broadcast_targets")
-              .update({ status: "sending" })
+              .update({ status: "sending", next_attempt_at: new Date(Date.now() + sendLeaseMs()).toISOString() })
               .eq("id", selected.id)
               .eq("broadcast_id", bc.id)
               .eq("status", "pending")
