@@ -15,7 +15,7 @@ function serverEnv() {
   return { url, serviceKey, anonKey };
 }
 
-let adminClient: ReturnType<typeof createClient> | null = null;
+let adminClient: any = null;
 
 function getSupabaseAdmin() {
   if (!adminClient) {
@@ -27,7 +27,7 @@ function getSupabaseAdmin() {
   return adminClient;
 }
 
-export const supabaseAdmin = new Proxy({} as ReturnType<typeof createClient>, {
+export const supabaseAdmin: any = new Proxy({}, {
   get(_target, prop, receiver) {
     return Reflect.get(getSupabaseAdmin(), prop, receiver);
   },
