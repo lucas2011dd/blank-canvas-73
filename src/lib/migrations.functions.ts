@@ -273,7 +273,10 @@ export const controlGroupMigration = createServerFn({ method: "POST" })
     if (data.action === "pause") patch.status = "paused";
     if (data.action === "resume") {
       patch.status = "running";
-      patch.next_attempt_at = new Date().toISOString();
+      // HARDENING: ao retomar, também aplicamos delay mínimo (60s) para não
+      // disparar um add imediato após um pause — o pause geralmente vem de
+      // instabilidade de sessão, então precisamos de respiro.
+      patch.next_attempt_at = new Date(Date.now() + 60_000).toISOString();
       patch.last_error = null;
 
       const { data: mig } = await context.supabase.from("group_migrations")
