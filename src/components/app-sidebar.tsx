@@ -84,15 +84,15 @@ export function AppSidebar() {
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className="border-b">
-        <Link to="/dashboard" className="flex items-center gap-2 px-2 py-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-hero text-primary-foreground">
+      <SidebarHeader className="border-b border-sidebar-border">
+        <Link to="/dashboard" className="group flex items-center gap-3 px-2 py-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-hero text-primary-foreground shadow-glow transition-transform duration-300 group-hover:scale-105">
             <Sparkles className="h-4 w-4" />
           </div>
           {!collapsed && (
-            <div className="flex flex-col">
-              <span className="text-sm font-semibold">ConnectHub</span>
-              <span className="text-xs text-muted-foreground">SaaS 2026</span>
+            <div className="flex flex-col leading-tight">
+              <span className="font-display text-[15px] font-semibold tracking-tight">ConnectHub</span>
+              <span className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">SaaS · 2026</span>
             </div>
           )}
         </Link>
