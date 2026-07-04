@@ -128,15 +128,17 @@ export const runScheduledNow = createServerFn({ method: "POST" })
     }
     const lockUntil = await acquireConnectionSendLock(context.supabase, conn.id);
     if (!lockUntil) throw new Error("Outra automação está usando esta conexão; tente novamente em instantes");
+    let claimed: any = null;
 
     try {
-      const { data: claimed } = await context.supabase.from("scheduled_messages")
+      const { data: claimedRow } = await context.supabase.from("scheduled_messages")
         .update({ status: "sending" })
         .eq("id", row.id)
         .eq("user_id", context.userId)
         .eq("status", "pending")
         .select("*")
         .maybeSingle();
+      claimed = claimedRow;
       if (!claimed) throw new Error("Agendamento já está sendo processado");
 
       const target = claimed.target_kind === "group" ? claimed.target : claimed.target;
@@ -156,6 +158,7 @@ export const runScheduledNow = createServerFn({ method: "POST" })
       }
       return { ok: true };
     } catch (e: any) {
+      if (!claimed) throw e;
       if (isPairingLostEvolutionError(e)) {
         await context.supabase.from("scheduled_messages").update({
           status: "pending",
