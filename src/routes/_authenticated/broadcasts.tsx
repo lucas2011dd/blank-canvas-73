@@ -109,7 +109,7 @@ function BroadcastsPage() {
                     <Button size="sm" variant="default" onClick={() => ctrl.mutate({ data: { id: b.id, action: b.status === "draft" ? "start" : "resume" } })}><Play className="h-3 w-3 mr-1" />Iniciar</Button>
                   ) : b.status === "running" ? (
                     <>
-                      <Button size="sm" variant="secondary" onClick={() => tick.mutate({ data: { id: b.id, max: 3 } })} disabled={tick.isPending}>
+                      <Button size="sm" variant="secondary" onClick={() => tick.mutate({ data: { id: b.id, max: 1 } })} disabled={tick.isPending}>
                         {tick.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Zap className="h-3 w-3 mr-1" />}Enviar agora
                       </Button>
                       <Button size="sm" variant="outline" onClick={() => ctrl.mutate({ data: { id: b.id, action: "pause" } })}><Pause className="h-3 w-3 mr-1" />Pausar</Button>
@@ -152,8 +152,8 @@ function NewBroadcastDialog({ connections, contacts, onSubmit, pending }: any) {
           name: String(fd.get("name") || "").trim(),
           connectionId: String(fd.get("connectionId") || ""),
           template: String(fd.get("template") || "").trim(),
-          minDelaySeconds: Number(fd.get("min") || 8),
-          maxDelaySeconds: Number(fd.get("max") || 45),
+          minDelaySeconds: Number(fd.get("min") || 30),
+          maxDelaySeconds: Number(fd.get("max") || 90),
           scheduledAt: fd.get("scheduledAt") ? new Date(String(fd.get("scheduledAt"))).toISOString() : null,
           contactIds: Array.from(selected),
           phones: phonesRaw,
@@ -180,8 +180,8 @@ function NewBroadcastDialog({ connections, contacts, onSubmit, pending }: any) {
             <Textarea name="template" required maxLength={4000} rows={4} placeholder="Olá {nome}, temos uma novidade..." />
           </div>
           <div className="grid grid-cols-3 gap-3">
-            <div><Label>Delay mín (s)</Label><Input name="min" type="number" min={3} max={600} defaultValue={8} /></div>
-            <div><Label>Delay máx (s)</Label><Input name="max" type="number" min={3} max={3600} defaultValue={45} /></div>
+            <div><Label>Delay mín (s)</Label><Input name="min" type="number" min={30} max={600} defaultValue={30} /></div>
+            <div><Label>Delay máx (s)</Label><Input name="max" type="number" min={90} max={3600} defaultValue={90} /></div>
             <div><Label>Agendar (opcional)</Label><Input name="scheduledAt" type="datetime-local" /></div>
           </div>
           <div>

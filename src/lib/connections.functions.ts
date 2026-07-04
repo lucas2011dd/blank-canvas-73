@@ -189,15 +189,38 @@ export const pollWhatsappQr = createServerFn({ method: "POST" })
       ? meta.evolution_instance
       : instanceNameFor(data.id);
 
-    // 1) Tenta extrair de instanceInfo (não gera novo QR na Evolution).
-    let qr: string | null = null;
-    const info = await evolution.instanceInfo(name).catch(() => null);
-    qr = await extractQrImage(info);
+    const lastQrProbeAt = Date.parse(String(meta.qr_probe_at ?? "")) || 0;
+    const qrProbeCooldownMs = Number(process.env.QR_PROBE_COOLDOWN_MS ?? 15_000);
+    if (lastQrProbeAt && Date.now() - lastQrProbeAt < qrProbeCooldownMs) {
+      return { status: existing.status, qr: null, throttled: true };
+    }
+    const probeMeta = {
+      ...meta,
+      evolution_instance: name,
+      qr_probe_at: new Date().toISOString(),
+    };
+    await context.supabase.from("connections").update({ metadata: probeMeta })
+      .eq("id", data.id).eq("user_id", context.userId);
 
-    // 2) Se nada, uma única chamada a /connect (Evolution só regenera se precisar).
-    if (!qr) {
+    // Não chamar instanceInfo/fetchInstances aqui: em servidores com muitas
+    // instâncias esse endpoint traz a lista inteira. QR vem do webhook ou de
+    // /connect com cooldown abaixo.
+    let qr: string | null = null;
+
+    // Dispara /connect com cooldown. Antes isso acontecia a cada
+    // 2s no polling do cliente e gerava flood de QR/logs na Evolution.
+    const lastConnectAt = Date.parse(String(meta.qr_connect_requested_at ?? "")) || 0;
+    const qrConnectCooldownMs = Number(process.env.QR_CONNECT_COOLDOWN_MS ?? 30_000);
+    if (!qr && Date.now() - lastConnectAt > qrConnectCooldownMs) {
       const connected = await evolution.connect(name).catch(() => null);
       qr = await extractQrImage(connected);
+      await context.supabase.from("connections").update({
+        metadata: {
+          ...probeMeta,
+          evolution_instance: name,
+          qr_connect_requested_at: new Date().toISOString(),
+        },
+      }).eq("id", data.id).eq("user_id", context.userId);
     }
 
     // 3) Ainda nada — reporta status atual sem forçar mais nada.
@@ -210,7 +233,7 @@ export const pollWhatsappQr = createServerFn({ method: "POST" })
     await context.supabase.from("connections").update({
       qr_code: qr, status: "connecting",
       last_sync_at: new Date().toISOString(),
-      metadata: { ...meta, evolution_instance: name, evolution_state: "qr_required" },
+      metadata: { ...probeMeta, evolution_instance: name, evolution_state: "qr_required" },
     }).eq("id", data.id).eq("user_id", context.userId);
 
     return { status: "connecting" as const, qr };
@@ -607,7 +630,8 @@ export const reconnectConnection = createServerFn({ method: "POST" })
     if (status !== "online" && !suppressManualQr) {
       const connected = await evolution.connect(name).catch(() => null);
       qrBase64 = await extractQrImage(connected);
-      if (!qrBase64) qrBase64 = await getFreshWhatsappQr(evolution, extractQrImage, name);
+      // Não chama /connect duas vezes no mesmo clique: isso sobrecarrega a
+      // Evolution e pode invalidar o QR recém-gerado.
       if (qrBase64) {
         const resolvedAfterQr = await resolveEvolutionStatus(name).catch(() => null);
         if (resolvedAfterQr?.status === "online") {
@@ -753,7 +777,7 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
-    const { evolution, isPairingLostEvolutionError } = await import("@/lib/evolution.server");
+    const { evolution, isPairingLostEvolutionError, isTransientEvolutionError } = await import("@/lib/evolution.server");
     const { markConnectionReauthRequired } = await import("@/lib/automation-safety.server");
     const { data: connRow } = await context.supabase
       .from("connections").select("id,metadata")
@@ -761,14 +785,13 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
     if (!connRow) throw new Error("Conexão não encontrada");
     const name = instanceNameFromConnection(connRow);
 
-    // (Re)registra o webhook — a instância pode ter sido criada antes de
-    // APP_PUBLIC_URL estar configurada.
-    const wh = buildWebhookUrl(name);
-    if (wh) await evolution.setWebhook(name, wh);
-
+    // Sync leve por padrão: grupos são necessários para seleção/migração;
+    // contatos e chats completos são dumps grandes e só rodam se ativados por env.
+    const syncContacts = String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() === "true";
+    const syncChats = String(process.env.WHATSAPP_SYNC_CHATS ?? "").toLowerCase() === "true";
     const [contactsRes, chatsRes, groupsRes] = await Promise.allSettled([
-      evolution.findContacts(name),
-      evolution.findChats(name),
+      syncContacts ? evolution.findContacts(name) : Promise.resolve([]),
+      syncChats ? evolution.findChats(name) : Promise.resolve([]),
       evolution.fetchAllGroups(name),
     ]);
     const contactsRaw = contactsRes.status === "fulfilled" ? contactsRes.value : [];
@@ -779,10 +802,8 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
     // logout definitivo. Só device_removed/logout/unpaired deve pausar tudo e
     // pedir QR; o restante fica como instabilidade temporária.
     const failures = [contactsRes, chatsRes, groupsRes].filter((r) => r.status === "rejected") as PromiseRejectedResult[];
-    const socketDead = failures.some((f) => /Connection Closed|device_removed|logged[_ ]?out|logout|unpaired|401/i.test(String(f.reason?.message ?? f.reason ?? "")));
+    const socketDead = failures.some((f) => /Connection Closed|device_removed|logged[_ ]?out|logout|unpaired|401|515|timeout/i.test(String(f.reason?.message ?? f.reason ?? "")));
     if (socketDead && contactsRaw.length === 0 && chatsRaw.length === 0 && groupsRaw.length === 0) {
-      // Tenta um restart; se falhar, sinaliza para o usuário reparear.
-      try { await evolution.restart(name); } catch { /* noop */ }
       if (failures.some((f) => isPairingLostEvolutionError(f.reason))) {
         await markConnectionReauthRequired(context.supabase, {
           connectionId: data.id,
@@ -792,7 +813,10 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
         });
         throw new Error("A sessão do WhatsApp foi removida dos aparelhos conectados no seu celular. Clique em Reconectar e escaneie o QR novamente.");
       }
-      throw new Error("WhatsApp instável no momento; solicitei restart silencioso e mantive a sessão sem pedir novo QR. Tente sincronizar novamente em alguns segundos.");
+      if (failures.some((f) => isTransientEvolutionError(f.reason))) {
+        throw new Error("WhatsApp/Evolution instável no momento; sync pesado foi interrompido para proteger a sessão. Tente novamente em alguns minutos.");
+      }
+      throw new Error("Falha ao sincronizar WhatsApp agora; tente novamente em alguns minutos.");
     }
 
     // ---------- Contatos ----------
@@ -898,10 +922,10 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
 
     await context.supabase.from("audit_logs").insert({
       user_id: context.userId, action: "sync", entity: "connection", entity_id: data.id,
-      metadata: { contactsUpserted, conversationsUpserted, groupsUpserted },
+      metadata: { contactsUpserted, conversationsUpserted, groupsUpserted, syncContacts, syncChats },
     });
 
-    return { contactsUpserted, conversationsUpserted, groupsUpserted };
+    return { contactsUpserted, conversationsUpserted, groupsUpserted, syncContacts, syncChats };
   });
 
 export const listWhatsappGroups = createServerFn({ method: "GET" })

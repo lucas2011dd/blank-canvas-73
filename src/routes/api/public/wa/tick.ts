@@ -5,7 +5,6 @@
 // Protegido por TICK_SECRET. O segredo é aceito APENAS via header
 // para não vazar em logs de proxy/CDN/referrer.
 import { createFileRoute } from "@tanstack/react-router";
-import { buildWebhookUrl } from "@/lib/webhook-url";
 
 // Rate limit simples em memória (por IP): 60 req/min.
 const RATE: Map<string, { count: number; reset: number }> = (globalThis as any).__tickRate ??= new Map();
@@ -45,7 +44,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           // Processar 100 webhooks de uma vez bloqueava o tick por até 15s,
           // deixando as migrações sem budget de tempo e causando timeouts
           // que o Baileys interpretava como queda da sessão.
-          const drainDeadline = Date.now() + 6_000;
+          const drainDeadline = Date.now() + Number(process.env.TICK_WEBHOOK_DRAIN_BUDGET_MS ?? 2_000);
           const drainRes = await drainWebhookQueue(supabaseAdmin, 20, drainDeadline);
           summary.webhooks = drainRes.processed;
           summary.webhookErrors = drainRes.failed;
@@ -67,10 +66,18 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           .select("connection_id")
           .eq("status", "running")
           .limit(100);
+        const { data: activeBroadcastConns } = await supabaseAdmin.from("broadcasts")
+          .select("connection_id")
+          .eq("status", "running")
+          .limit(100);
         const activeMigrationConnectionIds = new Set(
           (activeMigrationConns ?? []).map((row: any) => row.connection_id).filter(Boolean),
         );
-        const { isPairingLostEvolutionError, isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+        const activeAutomationConnectionIds = new Set([
+          ...(activeMigrationConns ?? []).map((row: any) => row.connection_id).filter(Boolean),
+          ...(activeBroadcastConns ?? []).map((row: any) => row.connection_id).filter(Boolean),
+        ]);
+        const { isPairingLostEvolutionError, isTransientEvolutionError, resolveEvolutionStatus } = await import("@/lib/evolution.server");
         const { markConnectionReauthRequired, REAUTH_REQUIRED_MESSAGE } = await import("@/lib/automation-safety.server");
         const { persistSessionSnapshot } = await import("@/lib/session-store.server");
         for (const conn of webhookConns ?? []) {
@@ -78,10 +85,15 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           // nem restart no reconciliador. A própria migração gerencia restart
           // e backoff; reconciliar aqui criava loop: connecting → restart →
           // close → connecting após o primeiro batch.
-          if (activeMigrationConnectionIds.has(conn.id)) continue;
+          if (activeAutomationConnectionIds.has(conn.id)) continue;
           const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
-          const wh = buildWebhookUrl(instance);
-          if (wh) await evolution.setWebhook(instance, wh).catch(() => null);
+          const meta = (conn.metadata as Record<string, any> | null) ?? {};
+          const now = Date.now();
+          const lastReconcile = Date.parse(meta.tick_reconciled_at ?? meta.reconciled_at ?? "") || 0;
+          const intervalMs = conn.status === "online"
+            ? Number(process.env.TICK_ONLINE_RECONCILE_INTERVAL_MS ?? 600_000)
+            : Number(process.env.TICK_RECOVER_RECONCILE_INTERVAL_MS ?? 180_000);
+          if (lastReconcile && now - lastReconcile < intervalMs) continue;
           try {
             let resolved = await resolveEvolutionStatus(instance);
             // Auto-reconexão silenciosa (restart/reload — nunca /connect).
@@ -94,10 +106,6 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 summary.reauthPaused++;
                 continue;
               }
-              if (resolved.status !== "online" && conn.disconnected_manually !== true) {
-              const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
-              if (recovered) resolved = recovered;
-            }
             const evState = resolved.state;
             const realStatus = resolved.status;
             const storedStatus = realStatus === "offline" && conn.disconnected_manually !== true ? "connecting" : realStatus;
@@ -112,6 +120,16 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                   evolution_state: realStatus === "offline" && conn.disconnected_manually !== true ? "silent_reconnect_pending" : evState,
                   last_evolution_state: evState,
                   reconciled_at: new Date().toISOString(),
+                  tick_reconciled_at: new Date().toISOString(),
+                },
+              }).eq("id", conn.id);
+            } else {
+              await supabaseAdmin.from("connections").update({
+                metadata: {
+                  ...meta,
+                  evolution_instance: instance,
+                  last_evolution_state: evState,
+                  tick_reconciled_at: new Date().toISOString(),
                 },
               }).eq("id", conn.id);
             }
@@ -140,6 +158,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               const lastRestart = Date.parse(meta.watchdog_restart_at ?? "") || 0;
               if (
                 !activeMigrationConnectionIds.has(conn.id) &&
+                String(process.env.WATCHDOG_ACTIVE_PROBE ?? "").toLowerCase() === "true" &&
                 now - lastProbe > probeInterval
               ) {
                 const alive = await evolution.canReadSession(instance).catch(() => false);
@@ -196,7 +215,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         //   TICK_BUDGET_MS       (default 25000) — tempo máximo por tick
         //   TICK_RECOVERY_MS     (default 10000) — retry após reconexão
         //   TICK_MIGRATION_RETRY_MS (default 20000) — retry migração após erro
-        const budgetMs = Number(process.env.TICK_BUDGET_MS ?? 25_000);
+        const budgetMs = Number(process.env.TICK_BUDGET_MS ?? 8_000);
         const recoveryMs = Number(process.env.TICK_RECOVERY_MS ?? 15_000);
         // CORREÇÃO: migRetryMs aumentado de 20s para 35s.
         // Após um erro de migração, o Baileys precisa de mais tempo para
@@ -208,7 +227,8 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const migrationConnectionsTouched = new Set<string>();
 
         let pass = 0;
-        while (Date.now() < deadline && pass < 500) {
+        const maxPasses = Number(process.env.TICK_MAX_PASSES ?? 3);
+        while (Date.now() < deadline && pass < maxPasses) {
           pass++;
           let didWork = false;
           const nowIsoPass = new Date().toISOString();
@@ -228,29 +248,17 @@ export const Route = createFileRoute("/api/public/wa/tick")({
 
             if (conn.status !== "online") {
               if ((conn.metadata as any)?.evolution_state === "reauth_required") continue;
-              const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
-              if (isPairingLostEvolutionError(recovered?.state)) {
-                await markConnectionReauthRequired(supabaseAdmin, {
-                  connectionId: bc.connection_id,
-                  instanceName: instance,
-                  reason: recovered?.state ?? "device_removed",
-                });
-                summary.reauthPaused++;
-                continue;
-              }
               await supabaseAdmin.from("connections").update({
-                status: recovered?.status ?? "connecting",
-                ...(recovered?.status === "online" ? { qr_code: null } : {}),
+                status: "connecting",
                 last_sync_at: new Date().toISOString(),
                 metadata: {
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
                   evolution_instance: instance,
-                  evolution_state: recovered?.state ?? "reconnecting",
+                  evolution_state: "send_waiting_for_online",
                   auto_reconnect_at: new Date().toISOString(),
                 },
               }).eq("id", bc.connection_id);
-              if (recovered?.status !== "online") continue;
-              didWork = true;
+              continue;
             }
 
             const { data: due } = await supabaseAdmin.from("broadcast_targets")
@@ -299,15 +307,13 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 continue;
               }
               if (isTransientEvolutionError(e)) {
-                const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
                 await supabaseAdmin.from("connections").update({
-                  status: recovered?.status ?? "connecting",
-                  ...(recovered?.status === "online" ? { qr_code: null } : {}),
+                  status: "connecting",
                   last_sync_at: new Date().toISOString(),
                   metadata: {
                     ...((conn.metadata as Record<string, unknown> | null) ?? {}),
                     evolution_instance: instance,
-                    evolution_state: recovered?.state ?? "reconnecting",
+                    evolution_state: "transient_send_backoff_no_restart",
                     auto_reconnect_at: new Date().toISOString(),
                   },
                 }).eq("id", bc.connection_id);
@@ -327,7 +333,10 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               didWork = true;
             }
 
-            const min = bc.min_delay_seconds ?? 8, max = bc.max_delay_seconds ?? 45;
+            const minFloor = Number(process.env.BROADCAST_MIN_DELAY_FLOOR_SECONDS ?? 30);
+            const maxFloor = Number(process.env.BROADCAST_MAX_DELAY_FLOOR_SECONDS ?? 90);
+            const min = Math.max(bc.min_delay_seconds ?? 30, Number.isFinite(minFloor) ? minFloor : 30);
+            const max = Math.max(bc.max_delay_seconds ?? 90, Number.isFinite(maxFloor) ? maxFloor : 90, min);
             const delaySec = Math.floor(min + Math.random() * (max - min + 1));
             const nextAt = new Date(Date.now() + delaySec * 1000).toISOString();
             const { data: nextRow } = await supabaseAdmin.from("broadcast_targets")
@@ -342,8 +351,9 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           if (Date.now() >= deadline) break;
 
           // -------- Agendadas devidas --------
+          const scheduledLimit = Number(process.env.TICK_SCHEDULED_LIMIT ?? 5);
           const { data: sched } = await supabaseAdmin.from("scheduled_messages")
-            .select("*").eq("status", "pending").lte("scheduled_at", nowIsoPass).order("scheduled_at").limit(20);
+            .select("*").eq("status", "pending").lte("scheduled_at", nowIsoPass).order("scheduled_at").limit(scheduledLimit);
 
           for (const row of sched ?? []) {
             if (Date.now() >= deadline) break;
@@ -354,28 +364,17 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(row.connection_id).replace(/-/g, "")}`;
             if (conn.status !== "online") {
               if ((conn.metadata as any)?.evolution_state === "reauth_required") continue;
-              const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
-              if (isPairingLostEvolutionError(recovered?.state)) {
-                await markConnectionReauthRequired(supabaseAdmin, {
-                  connectionId: row.connection_id,
-                  instanceName: instance,
-                  reason: recovered?.state ?? "device_removed",
-                });
-                summary.reauthPaused++;
-                continue;
-              }
               await supabaseAdmin.from("connections").update({
-                status: recovered?.status ?? "connecting",
-                ...(recovered?.status === "online" ? { qr_code: null } : {}),
+                status: "connecting",
                 last_sync_at: new Date().toISOString(),
                 metadata: {
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
                   evolution_instance: instance,
-                  evolution_state: recovered?.state ?? "reconnecting",
+                  evolution_state: "scheduled_waiting_for_online",
                   auto_reconnect_at: new Date().toISOString(),
                 },
               }).eq("id", row.connection_id);
-              if (recovered?.status !== "online") continue;
+              continue;
             }
             try {
               await evolution.sendText(instance, row.target, row.body);
@@ -410,15 +409,13 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 continue;
               }
               if (isTransientEvolutionError(e)) {
-                const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
                 await supabaseAdmin.from("connections").update({
-                  status: recovered?.status ?? "connecting",
-                  ...(recovered?.status === "online" ? { qr_code: null } : {}),
+                  status: "connecting",
                   last_sync_at: new Date().toISOString(),
                   metadata: {
                     ...((conn.metadata as Record<string, unknown> | null) ?? {}),
                     evolution_instance: instance,
-                    evolution_state: recovered?.state ?? "reconnecting",
+                    evolution_state: "transient_scheduled_backoff_no_restart",
                     auto_reconnect_at: new Date().toISOString(),
                   },
                 }).eq("id", row.connection_id);

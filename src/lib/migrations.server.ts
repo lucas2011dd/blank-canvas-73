@@ -311,10 +311,11 @@ async function handleSessionDrop(
   // Restart silencioso com circuito: não reinicia na primeira oscilação e não
   // reinicia em rajada. O restart em loop logo após addGroupParticipants era a
   // principal fonte de sobrecarga e queda total da sessão.
+  const autoRestartEnabled = String(process.env.MIGRATION_AUTO_RESTART_ON_DROP ?? "").toLowerCase() === "true";
   const restartAfterDrops = Number(process.env.MIGRATION_RESTART_AFTER_DROPS ?? 2);
   const restartCooldownMs = Number(process.env.MIGRATION_RESTART_COOLDOWN_MS ?? 120_000);
   const lastRestartAt = Date.parse(String(meta.migration_restart_at ?? "")) || 0;
-  const shouldRestart = failCount >= restartAfterDrops && Date.now() - lastRestartAt > restartCooldownMs;
+  const shouldRestart = autoRestartEnabled && failCount >= restartAfterDrops && Date.now() - lastRestartAt > restartCooldownMs;
   if (shouldRestart) {
     await evolution.restart(instance).catch(() => undefined);
     await auditLog(supabase, {
@@ -422,8 +423,13 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       .select("id,status,metadata")
       .maybeSingle();
     if (!reconnectClaim) return false;
-    // Reconecta preservando a sessão: restart/reload da instância, nunca /connect.
-    const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 2_000 }).catch(() => null);
+    // Por padrão NÃO reinicia automaticamente durante migração. Restart em
+    // loop logo após addGroupParticipants é uma das maiores fontes de carga e
+    // queda da sessão. Quando habilitado por env, usa restart preservando sessão.
+    const allowAutoRestart = String(process.env.MIGRATION_ALLOW_AUTO_RESTART ?? "").toLowerCase() === "true";
+    const recovered = allowAutoRestart
+      ? await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 2_000 }).catch(() => null)
+      : await resolveEvolutionStatus(instance).catch(() => null);
     if (recovered) {
       await supabase.from("connections").update({
         status: recovered.status,
@@ -464,7 +470,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
           metadata: cleanMeta,
         }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
       } else {
-        const state = await evolution.state(instance).catch(() => null);
+        const state = resolved.state ?? resolved.status;
         const sessionRemoved = isLoggedOutEvolutionError(state) || pairingLostSignal(conn, state);
           if (sessionRemoved) {
             const { data: freshConn } = await supabase.from("connections")

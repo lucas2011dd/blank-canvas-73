@@ -32,8 +32,8 @@ const createSchema = z.object({
   name: z.string().trim().min(1).max(120),
   connectionId: z.string().uuid(),
   template: z.string().trim().min(1).max(4000),
-  minDelaySeconds: z.number().int().min(3).max(600).default(8),
-  maxDelaySeconds: z.number().int().min(3).max(3600).default(45),
+  minDelaySeconds: z.number().int().min(3).max(600).default(30),
+  maxDelaySeconds: z.number().int().min(3).max(3600).default(90),
   scheduledAt: z.string().datetime().nullable().optional(),
   // Seleção de alvos: contatos por id, telefones avulsos, ou participantes de grupos
   contactIds: z.array(z.string().uuid()).optional().default([]),
@@ -48,6 +48,10 @@ export const createBroadcast = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => createSchema.parse(d))
   .handler(async ({ context, data }) => {
     if (data.maxDelaySeconds < data.minDelaySeconds) throw new Error("Delay máximo deve ser ≥ mínimo");
+    const minFloor = Number(process.env.BROADCAST_MIN_DELAY_FLOOR_SECONDS ?? 30);
+    const maxFloor = Number(process.env.BROADCAST_MAX_DELAY_FLOOR_SECONDS ?? 90);
+    const safeMinDelay = Math.max(data.minDelaySeconds, Number.isFinite(minFloor) ? minFloor : 30);
+    const safeMaxDelay = Math.max(data.maxDelaySeconds, Number.isFinite(maxFloor) ? maxFloor : 90, safeMinDelay);
 
     // Resolve alvos
     const { phoneMatchesBrFilter } = await import("@/lib/br-ddd");
@@ -80,8 +84,8 @@ export const createBroadcast = createServerFn({ method: "POST" })
       connection_id: data.connectionId,
       name: data.name,
       template: data.template,
-      min_delay_seconds: data.minDelaySeconds,
-      max_delay_seconds: data.maxDelaySeconds,
+      min_delay_seconds: safeMinDelay,
+      max_delay_seconds: safeMaxDelay,
       status: "draft",
       total_recipients: targets.length,
       scheduled_at: data.scheduledAt ?? null,
@@ -136,7 +140,7 @@ export const controlBroadcast = createServerFn({ method: "POST" })
 // disparo imediato/manual sem depender de cron externo. Envia até N mensagens.
 export const runBroadcastTick = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ id: z.string().uuid(), max: z.number().int().min(1).max(10).default(3) }).parse(d))
+  .inputValidator((d: unknown) => z.object({ id: z.string().uuid(), max: z.number().int().min(1).max(1).default(1) }).parse(d))
   .handler(async ({ context, data }) => {
     const { data: bc } = await context.supabase.from("broadcasts")
       .select("*").eq("id", data.id).eq("user_id", context.userId).single();
@@ -148,41 +152,20 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
     if (!conn) throw new Error("Conexão WhatsApp não encontrada");
     const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(conn.id).replace(/-/g, "")}`;
 
-    const { evolution, isPairingLostEvolutionError, isTransientEvolutionError, reconnectEvolutionSession, resolveEvolutionStatus } = await import("@/lib/evolution.server");
+    const { evolution, isPairingLostEvolutionError, isTransientEvolutionError } = await import("@/lib/evolution.server");
     const { markConnectionReauthRequired, REAUTH_REQUIRED_MESSAGE } = await import("@/lib/automation-safety.server");
-    const resolved = await resolveEvolutionStatus(instance);
-    if (resolved.status !== "online") {
-      if (isPairingLostEvolutionError(resolved.state)) {
-        await markConnectionReauthRequired(context.supabase, {
-          connectionId: conn.id,
-          userId: context.userId,
-          instanceName: instance,
-          reason: resolved.state ?? "device_removed",
-        });
-        throw new Error(REAUTH_REQUIRED_MESSAGE);
-      }
-      const recovered = await reconnectEvolutionSession(instance, { attempts: 3, delayMs: 1_000 }).catch(() => null);
-      if (isPairingLostEvolutionError(recovered?.state)) {
-        await markConnectionReauthRequired(context.supabase, {
-          connectionId: conn.id,
-          userId: context.userId,
-          instanceName: instance,
-          reason: recovered?.state ?? "device_removed",
-        });
-        throw new Error(REAUTH_REQUIRED_MESSAGE);
-      }
+    if (conn.status !== "online") {
       await context.supabase.from("connections").update({
-        status: recovered?.status ?? resolved.status,
-        ...(recovered?.status === "online" ? { qr_code: null } : {}),
+        status: "connecting",
         last_sync_at: new Date().toISOString(),
         metadata: {
           ...((conn.metadata as Record<string, unknown> | null) ?? {}),
           evolution_instance: instance,
-          evolution_state: recovered?.state ?? resolved.status,
+          evolution_state: "broadcast_waiting_for_online",
           auto_reconnect_at: new Date().toISOString(),
         },
       }).eq("id", conn.id).eq("user_id", context.userId);
-      if (recovered?.status !== "online") throw new Error("Reconectando WhatsApp sem novo QR; disparo mantido na fila");
+      throw new Error("WhatsApp não está online; disparo mantido na fila sem reiniciar a Evolution");
     }
     const nowIso = new Date().toISOString();
     const { data: due } = await context.supabase.from("broadcast_targets")
@@ -214,22 +197,20 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
           throw new Error(REAUTH_REQUIRED_MESSAGE);
         }
         if (isTransientEvolutionError(e)) {
-          const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 1_000 }).catch(() => null);
           await context.supabase.from("connections").update({
-            status: recovered?.status ?? "connecting",
-            ...(recovered?.status === "online" ? { qr_code: null } : {}),
+            status: "connecting",
             last_sync_at: new Date().toISOString(),
             metadata: {
               ...((conn.metadata as Record<string, unknown> | null) ?? {}),
               evolution_instance: instance,
-              evolution_state: recovered?.state ?? "reconnecting",
+              evolution_state: "broadcast_transient_backoff_no_restart",
               auto_reconnect_at: new Date().toISOString(),
             },
           }).eq("id", conn.id).eq("user_id", context.userId);
           await context.supabase.from("broadcast_targets").update({
             status: "pending",
             next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
-            error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
+            error: "Evolution instável; alvo mantido na fila sem restart automático",
           } as any).eq("id", t.id);
           break;
         }
@@ -240,7 +221,10 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
       }
 
       // Marca próximo tick com delay aleatório
-      const min = bc.min_delay_seconds ?? 8, max = bc.max_delay_seconds ?? 45;
+      const minFloor = Number(process.env.BROADCAST_MIN_DELAY_FLOOR_SECONDS ?? 30);
+      const maxFloor = Number(process.env.BROADCAST_MAX_DELAY_FLOOR_SECONDS ?? 90);
+      const min = Math.max(bc.min_delay_seconds ?? 30, Number.isFinite(minFloor) ? minFloor : 30);
+      const max = Math.max(bc.max_delay_seconds ?? 90, Number.isFinite(maxFloor) ? maxFloor : 90, min);
       const delaySec = Math.floor(min + Math.random() * (max - min + 1));
       const nextAt = new Date(Date.now() + delaySec * 1000).toISOString();
       await context.supabase.from("broadcast_targets")
