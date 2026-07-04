@@ -614,10 +614,10 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
         await supabase.from("group_migrations").update({
           failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
-          next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
+          next_attempt_at: new Date(Date.now() + 180_000).toISOString(),
           last_error: sessionRemoved
             ? "Sessão oscilou — reconexão silenciosa ativa, sem recriar instância nem gerar QR automático"
-            : "WhatsApp reconectando sem novo QR — fila retoma sozinha em 30s",
+            : "WhatsApp reconectando sem novo QR — fila retoma sozinha em 180s",
         }).eq("id", mig.id);
         return { migrationId, skipped: true, reason: "connection_offline" };
         }
@@ -630,8 +630,8 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       const requeued = await requeueTransientFailures(supabase, mig.id);
       await supabase.from("group_migrations").update({
         failed_count: Math.max(0, (mig.failed_count ?? 0) - requeued),
-        next_attempt_at: new Date(Date.now() + 45_000).toISOString(),
-        last_error: "Evolution indisponível — tentando reconectar sem novo QR em 45s",
+        next_attempt_at: new Date(Date.now() + 180_000).toISOString(),
+        last_error: "Evolution indisponível — tentando reconectar sem novo QR em 180s",
       }).eq("id", mig.id);
       return { migrationId, skipped: true, reason: "connection_offline" };
       }
@@ -882,11 +882,11 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     if (isTransientEvolutionError(e) || isAuthLikeTransientDuringMigration(e)) {
       // CORREÇÃO (item 6): backoff EXPONENCIAL para falhas transientes.
       // Antes: delay fixo (30s) independente de quantas falhas seguidas.
-      // Agora: 30s → 60s → 120s → 240s (teto 5min), com contador em
+      // Agora: 5min → 10min → 20min (teto 30min), com contador em
       // metadata.consecutive_transient_failures. É resetado para 0 no
       // update final quando o batch tem sucesso (bloco abaixo).
-      const baseMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_MS ?? 30_000);
-      const capMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_CAP_MS ?? 300_000);
+      const baseMs = Math.max(300_000, Number(process.env.MIGRATION_TRANSIENT_RETRY_MS ?? 300_000));
+      const capMs = Math.max(baseMs, Number(process.env.MIGRATION_TRANSIENT_RETRY_CAP_MS ?? 1_800_000));
       const consecutive = Number((mig.metadata as any)?.consecutive_transient_failures ?? 0);
       const retryDelayMs = Math.min(baseMs * (2 ** consecutive), capMs);
       const nextConsecutive = consecutive + 1;
