@@ -835,25 +835,36 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
       groups: groupsRes.status === "rejected" ? String((groupsRes as PromiseRejectedResult).reason?.message ?? (groupsRes as PromiseRejectedResult).reason ?? "") : null,
     };
 
-    // Detecta socket morto sem confundir 401/Connection Closed transitório com
-    // logout definitivo. Só device_removed/logout/unpaired deve pausar tudo e
-    // pedir QR; o restante fica como instabilidade temporária.
+    // Só interrompe (e pede QR) quando a Evolution reporta pareamento perdido.
+    // Timeouts/Connection Closed transitórios NÃO devem quebrar o sync — o
+    // cache anterior de grupos continua no banco e o webhook segue populando.
     const failures = [contactsRes, chatsRes, groupsRes].filter((r) => r.status === "rejected") as PromiseRejectedResult[];
-    const socketDead = failures.some((f) => /Connection Closed|device_removed|logged[_ ]?out|logout|unpaired|401|515|timeout/i.test(String(f.reason?.message ?? f.reason ?? "")));
-    if (socketDead && contactsRaw.length === 0 && chatsRaw.length === 0 && groupsRaw.length === 0) {
-      if (failures.some((f) => isPairingLostEvolutionError(f.reason))) {
-        await markConnectionReauthRequired(context.supabase, {
-          connectionId: data.id,
-          userId: context.userId,
-          instanceName: name,
-          reason: "device_removed",
-        });
-        throw new Error("A sessão do WhatsApp foi removida dos aparelhos conectados no seu celular. Clique em Reconectar e escaneie o QR novamente.");
-      }
-      if (failures.some((f) => isTransientEvolutionError(f.reason))) {
-        throw new Error("WhatsApp/Evolution instável no momento; sync pesado foi interrompido para proteger a sessão. Tente novamente em alguns minutos.");
-      }
-      throw new Error("Falha ao sincronizar WhatsApp agora; tente novamente em alguns minutos.");
+    if (failures.some((f) => isPairingLostEvolutionError(f.reason))) {
+      await markConnectionReauthRequired(context.supabase, {
+        connectionId: data.id,
+        userId: context.userId,
+        instanceName: name,
+        reason: "device_removed",
+      });
+      throw new Error("A sessão do WhatsApp foi removida dos aparelhos conectados no seu celular. Clique em Reconectar e escaneie o QR novamente.");
+    }
+    // Se TODAS as chamadas ativas falharam com erro transitório, avisa com o
+    // motivo real (timeout, 502, Connection Closed) para o usuário saber que
+    // é lentidão da Evolution — provável excesso de mensagens em cache.
+    const activeCalls = [
+      { key: "groups", res: groupsRes },
+      ...(syncContacts ? [{ key: "contacts", res: contactsRes }] : []),
+      ...(syncChats ? [{ key: "chats", res: chatsRes }] : []),
+    ];
+    const allFailed = activeCalls.length > 0 && activeCalls.every((c) => c.res.status === "rejected");
+    if (allFailed) {
+      const reason = String((activeCalls[0].res as PromiseRejectedResult).reason?.message ?? (activeCalls[0].res as PromiseRejectedResult).reason ?? "erro desconhecido");
+      const transient = failures.some((f) => isTransientEvolutionError(f.reason));
+      throw new Error(
+        transient
+          ? `Evolution lenta/instável (${reason}). Provável excesso de mensagens em cache — considere limpar a instância no Evolution Manager (Delete + Instance +) e reconectar.`
+          : `Falha ao sincronizar com a Evolution: ${reason}`,
+      );
     }
 
     // ---------- Contatos ----------
