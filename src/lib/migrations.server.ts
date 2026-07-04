@@ -588,5 +588,24 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     metadata: nextMeta,
   }).eq("id", mig.id);
 
+  // Reset do contador de quedas de sessão quando o batch de fato progrediu.
+  // Isso garante que uma oscilação isolada não conte para sempre — só quedas
+  // CONSECUTIVAS somam para o limite MIGRATION_MAX_SESSION_DROPS.
+  if (hadProgress) {
+    try {
+      const connMeta = (conn?.metadata as Record<string, unknown> | null) ?? {};
+      if (Number((connMeta as any).session_drop_count ?? 0) > 0) {
+        const cleaned = { ...connMeta };
+        delete (cleaned as any).session_drop_count;
+        delete (cleaned as any).last_session_drop_at;
+        delete (cleaned as any).last_session_drop_reason;
+        await supabase.from("connections")
+          .update({ metadata: cleaned })
+          .eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      }
+    } catch { /* best-effort */ }
+  }
+
+
   return { migrationId, added, failed, skipped, done };
 }
