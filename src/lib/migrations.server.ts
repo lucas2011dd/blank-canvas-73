@@ -412,12 +412,16 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     return { migrationId, completed: true };
   }
 
-  // Pré-check: descarta números sem WhatsApp ativo antes do add. Evita
-  // "tentativas desperdiçadas" e falhas que a Evolution/Baileys interpretam
-  // como comportamento suspeito. Best-effort — se o endpoint falhar, segue.
-  try {
+  // Pré-check: descarta números sem WhatsApp ativo antes do add. DESLIGADO
+  // por padrão — cada chamada à Evolution imediatamente antes do
+  // addGroupParticipants aumenta o risco de stream:error/device_removed no
+  // Baileys. Ative com MIGRATION_PRECHECK_NUMBERS=true apenas se sua base
+  // tiver muitos números inválidos e você aceitar o custo. Sem pré-check, os
+  // inválidos caem naturalmente como "failed" no retorno do próprio add.
+  if (String(process.env.MIGRATION_PRECHECK_NUMBERS ?? "").toLowerCase() === "true") try {
     const nums = batch.map((t: any) => t.phone).filter(Boolean);
     const check = await evolution.checkWhatsappNumbers(instance, nums);
+
     if (check.length) {
       const invalid = new Set(
         check.filter((r) => !r.exists).map((r) => r.number),
