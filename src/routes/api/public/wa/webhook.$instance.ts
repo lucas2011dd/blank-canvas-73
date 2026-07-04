@@ -69,7 +69,8 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
               }
 
               const reason = String(data.statusReason ?? data.reason ?? errorCode ?? "").toLowerCase();
-              const deviceRemoved = /device[_ ]?removed|logged?[_ ]?out|401/i.test(reason);
+              const stateAndReason = `${state} ${reason}`.toLowerCase();
+              const explicitDeviceRemoved = /device[_ ]?removed|logged?[_ ]?out|logout|unpaired/i.test(stateAndReason);
 
               // Durante migração ATIVA nesta conexão, não flipa `status` para
               // "connecting" em oscilações transitórias — o Baileys emite
@@ -83,6 +84,13 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                 .eq("status", "running")
                 .limit(1)
                 .maybeSingle();
+              // Durante migração, statusReason 401/515 pode ser só fechamento
+              // transitório do stream Baileys logo após addGroupParticipants.
+              // Só é perda real de pareamento se o payload disser explicitamente
+              // device_removed/logout/unpaired. Fora de migração, 401 continua
+              // sendo tratado como queda dura.
+              const numericAuthDrop = /\b401\b/.test(reason);
+              const deviceRemoved = explicitDeviceRemoved || (!activeMig && numericAuthDrop);
               const skipStatusFlip = !!activeMig && status !== "online" && !deviceRemoved;
 
               const nextStatus = skipStatusFlip

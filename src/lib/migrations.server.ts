@@ -213,8 +213,10 @@ async function handleSessionDrop(
   // Restart silencioso (preserva sessão — nunca logout).
   await evolution.restart(instance).catch(() => undefined);
 
+  const nextConnectionStatus = conn?.status === "online" ? "online" : "connecting";
+
   await supabase.from("connections").update({
-    status: "connecting",
+    status: nextConnectionStatus,
     last_sync_at: new Date().toISOString(),
     metadata: {
       ...meta,
@@ -223,6 +225,7 @@ async function handleSessionDrop(
       last_session_drop_at: new Date().toISOString(),
       last_session_drop_reason: String(reasonStr ?? ""),
       evolution_state: "graceful_restart_pending",
+      migration_recovery_status_preserved: conn?.status === "online",
     },
   }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
 

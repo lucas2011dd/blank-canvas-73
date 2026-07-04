@@ -673,9 +673,7 @@ export function isPairingLostEvolutionState(state: unknown): boolean {
     normalized.includes("device_removed") ||
     normalized.includes("logged_out") ||
     normalized.includes("logged out") ||
-    normalized.includes("unpaired") ||
-    normalized.includes("conflict") && normalized.includes("401") ||
-    normalized.includes("stream:error") && normalized.includes("401")
+    normalized.includes("unpaired")
   );
 }
 
@@ -683,15 +681,26 @@ export function isPairingLostEvolutionError(error: unknown): boolean {
   const haystack = typeof error === "object" && error !== null
     ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
     : String(error ?? "").toLowerCase();
+  const explicitPairingLoss =
+    haystack.includes("device_removed") ||
+    haystack.includes("logged_out") ||
+    haystack.includes("logged out") ||
+    haystack.includes("logout") ||
+    haystack.includes("unpaired") ||
+    haystack.includes("pairing_lost") ||
+    haystack.includes("reauth_required");
+  const hardUnauthorized =
+    haystack.includes("401") &&
+    (
+      haystack.includes("unauthoriz") ||
+      haystack.includes("forbidden") ||
+      explicitPairingLoss
+    );
+
   return (
     isPairingLostEvolutionState(haystack) ||
-    haystack.includes("instance is not connected") ||
-    haystack.includes("the instance is not connected") ||
-    haystack.includes("não está conectada") ||
-    haystack.includes("nao esta conectada") ||
-    haystack.includes("statuscode\":401") ||
-    haystack.includes("status code\":401") ||
-    haystack.includes("status\":401")
+    explicitPairingLoss ||
+    hardUnauthorized
   );
 }
 
@@ -719,6 +728,10 @@ export function isTransientEvolutionError(error: unknown): boolean {
   );
   if (isPermanent) return false;
   return (
+    haystack.includes("515") ||
+    haystack.includes("428") ||
+    haystack.includes("stream:error") ||
+    haystack.includes("stream error") ||
     haystack.includes("connection closed") ||
     haystack.includes("connection close") ||
     haystack.includes("instance is not connected") ||

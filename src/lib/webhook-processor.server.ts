@@ -31,7 +31,9 @@ async function handleEvent(
     const state = extractEvolutionConnectionState(data) ?? data.state ?? data.status ?? "";
     const status = evolutionStateToStatus(state);
     const reason = String(data.statusReason ?? data.reason ?? "").toLowerCase();
-    const deviceRemoved = /device[_ ]?removed|logged?[_ ]?out|401/i.test(reason);
+    const stateAndReason = `${state} ${reason}`.toLowerCase();
+    const explicitDeviceRemoved = /device[_ ]?removed|logged?[_ ]?out|logout|unpaired/i.test(stateAndReason);
+    let deviceRemoved = explicitDeviceRemoved;
 
     if (status === "offline") {
       const [{ count: activeBroadcasts }, { count: activeMigrations }] = await Promise.all([
@@ -41,16 +43,19 @@ async function handleEvent(
           .eq("connection_id", conn.id).eq("status", "running"),
       ]);
       const hasActive = Boolean((activeBroadcasts ?? 0) + (activeMigrations ?? 0));
+      const numericAuthDrop = /\b401\b/.test(reason);
+      deviceRemoved = explicitDeviceRemoved || (!hasActive && numericAuthDrop);
       if (hasActive && !deviceRemoved) {
         await admin.from("connections").update({
-          status: "connecting",
+          status: conn.status,
           qr_code: null,
           last_sync_at: new Date().toISOString(),
           metadata: {
             ...((conn.metadata as Record<string, unknown> | null) ?? {}),
             evolution_instance: instanceName,
-            evolution_state: "silent_reconnect_after_connection_update",
+            evolution_state: "migration_transient_connection_update_ignored",
             last_connection_update_state: state,
+            last_connection_update_reason: data.statusReason ?? data.reason ?? null,
             auto_reconnect_at: new Date().toISOString(),
           },
         }).eq("id", conn.id);
