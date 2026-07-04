@@ -24,6 +24,16 @@ const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConne
 const migQ = queryOptions({ queryKey: ["group-migrations"], queryFn: () => listGroupMigrations() });
 const AUTO_TICK_LEASE_KEY = "connecthub:group-migration-auto-tick";
 
+function readAutoTickLease() {
+  try {
+    const raw = window.localStorage.getItem(AUTO_TICK_LEASE_KEY);
+    return raw ? JSON.parse(raw) as { owner?: string; expiresAt?: number } : null;
+  } catch {
+    window.localStorage.removeItem(AUTO_TICK_LEASE_KEY);
+    return null;
+  }
+}
+
 export const Route = createFileRoute("/_authenticated/migracao-grupos")({
   head: () => ({ meta: [{ title: "Migração de Grupos — ConnectHub" }] }),
   loader: ({ context }) => Promise.all([
@@ -65,8 +75,7 @@ function Page() {
     const run = async () => {
       if (autoTickInFlight.current) return;
       const now = Date.now();
-      const leaseRaw = window.localStorage.getItem(AUTO_TICK_LEASE_KEY);
-      const lease = leaseRaw ? JSON.parse(leaseRaw) as { owner?: string; expiresAt?: number } : null;
+      const lease = readAutoTickLease();
       if (lease?.owner && lease.owner !== autoTickTabId.current && Number(lease.expiresAt ?? 0) > now) return;
       window.localStorage.setItem(AUTO_TICK_LEASE_KEY, JSON.stringify({ owner: autoTickTabId.current, expiresAt: now + 12_000 }));
       autoTickInFlight.current = true;
@@ -81,8 +90,7 @@ function Page() {
     return () => {
       stopped = true;
       clearInterval(id);
-      const leaseRaw = window.localStorage.getItem(AUTO_TICK_LEASE_KEY);
-      const lease = leaseRaw ? JSON.parse(leaseRaw) as { owner?: string } : null;
+      const lease = readAutoTickLease();
       if (lease?.owner === autoTickTabId.current) window.localStorage.removeItem(AUTO_TICK_LEASE_KEY);
     };
   }, [hasRunning, tickFn, qc]);
