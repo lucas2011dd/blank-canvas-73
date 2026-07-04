@@ -688,6 +688,10 @@ export function isPairingLostEvolutionError(error: unknown): boolean {
   const haystack = typeof error === "object" && error !== null
     ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
     : String(error ?? "").toLowerCase();
+  // Só classifica como pareamento perdido quando há sinal textual explícito.
+  // Durante addGroupParticipants a Evolution/Baileys pode retornar 401,
+  // unauthorized ou forbidden por fechamento transitório do stream; tratar isso
+  // como logout mata a sessão sem necessidade após o primeiro batch.
   const explicitPairingLoss =
     haystack.includes("device_removed") ||
     haystack.includes("logged_out") ||
@@ -696,18 +700,10 @@ export function isPairingLostEvolutionError(error: unknown): boolean {
     haystack.includes("unpaired") ||
     haystack.includes("pairing_lost") ||
     haystack.includes("reauth_required");
-  const hardUnauthorized =
-    haystack.includes("401") &&
-    (
-      haystack.includes("unauthoriz") ||
-      haystack.includes("forbidden") ||
-      explicitPairingLoss
-    );
 
   return (
     isPairingLostEvolutionState(haystack) ||
-    explicitPairingLoss ||
-    hardUnauthorized
+    explicitPairingLoss
   );
 }
 
@@ -741,6 +737,9 @@ export function isTransientEvolutionError(error: unknown): boolean {
     haystack.includes("the instance is not connected") ||
     haystack.includes("not_connected") ||
     haystack.includes("not connected") ||
+    haystack.includes("401") ||
+    haystack.includes("unauthoriz") ||
+    haystack.includes("forbidden") ||
     haystack.includes("timed out") ||
     haystack.includes("timeout") ||
     haystack.includes("socket") ||

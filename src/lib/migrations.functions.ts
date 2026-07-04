@@ -122,6 +122,28 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     const instance = (conn.metadata as any)?.evolution_instance ?? instanceNameFor(conn.id);
     const ownerPhone = digits((conn.metadata as any)?.owner_phone ?? (conn.metadata as any)?.number ?? "");
 
+    // Cada nova migração começa com contador limpo. Sem isso, quedas antigas
+    // deixadas em connections.metadata.session_drop_count faziam a primeira
+    // oscilação da migração nova atingir o limite e pausar/desconectar tudo.
+    const cleanConnMeta: Record<string, unknown> = { ...((conn.metadata as Record<string, unknown> | null) ?? {}) };
+    delete cleanConnMeta.session_drop_count;
+    delete cleanConnMeta.last_session_drop_at;
+    delete cleanConnMeta.last_session_drop_reason;
+    delete cleanConnMeta.pairing_lost_at;
+    delete cleanConnMeta.pairing_lost_reason;
+    delete cleanConnMeta.device_removed_at;
+    delete cleanConnMeta.status_reason;
+    delete cleanConnMeta.disconnected_at;
+    cleanConnMeta.evolution_instance = instance;
+    cleanConnMeta.evolution_state = "migration_start_clean";
+    await context.supabase.from("connections").update({
+      metadata: cleanConnMeta,
+      auto_reconnect: true,
+      disconnected_manually: false,
+      qr_code: null,
+      last_sync_at: new Date().toISOString(),
+    }).eq("id", data.connectionId).eq("user_id", context.userId);
+
     const { evolution } = await import("@/lib/evolution.server");
     const parts = await evolution.groupParticipants(instance, data.sourceGroupJid);
     const exclude = new Set(data.excludePhones.map((p) => digits(p)));
@@ -218,7 +240,7 @@ export const startGroupMigration = createServerFn({ method: "POST" })
 
     await context.supabase.from("audit_logs").insert({
       user_id: context.userId, action: "create", entity: "group_migration", entity_id: mig.id,
-      metadata: { total: allPhones.length, mode: data.mode },
+      metadata: { total: allPhones.length, mode: data.mode, session_counters_reset: true },
     });
 
     return mig;
