@@ -251,6 +251,37 @@ export const runGroupMigrationNow = createServerFn({ method: "POST" })
     return { ...result, batchesProcessed: 1 };
   });
 
+// Auto-tick por usuário: chamado pelo painel de Migração de Grupos enquanto
+// o usuário estiver com a página aberta. Processa 1 batch de cada migração
+// devida (next_attempt_at <= now) do próprio usuário, respeitando os
+// cooldowns internos de processGroupMigrationBatch. Assim a migração avança
+// sozinha, sem exigir cron externo nem cliques em "Iniciar/Batch agora".
+export const tickMyMigrations = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
+    const nowIso = new Date().toISOString();
+    const { data: due } = await supabaseAdmin
+      .from("group_migrations")
+      .select("id")
+      .eq("user_id", context.userId)
+      .eq("status", "running")
+      .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
+      .limit(10);
+    const results: any[] = [];
+    for (const m of due ?? []) {
+      try {
+        results.push(await processGroupMigrationBatch(supabaseAdmin, m.id, context.userId));
+      } catch (e: any) {
+        results.push({ migrationId: m.id, error: String(e?.message ?? e) });
+      }
+    }
+    return { processed: results.length, results };
+  });
+
+
+
 
 function jitter(min: number, max: number) {
   return Math.floor(min + Math.random() * (max - min + 1));
