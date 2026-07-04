@@ -8,6 +8,33 @@
 //   a Evolution 30s (causa raiz de device_removed).
 import { createFileRoute } from "@tanstack/react-router";
 
+const HEAVY_ACK_ONLY_EVENTS = new Set([
+  "messages.set", "MESSAGES_SET",
+  "messages.update", "MESSAGES_UPDATE",
+  "presence.update", "PRESENCE_UPDATE",
+  "chats.upsert", "CHATS_UPSERT",
+  "chats.update", "CHATS_UPDATE",
+]);
+
+const LARGE_DEFERABLE_EVENTS = new Set([
+  "contacts.upsert", "CONTACTS_UPSERT",
+  "contacts.update", "CONTACTS_UPDATE",
+  "groups.upsert", "GROUPS_UPSERT",
+  "group-participants.update", "GROUP_PARTICIPANTS_UPDATE",
+]);
+
+function extractEventFromRaw(raw: string): string | null {
+  return raw.match(/"event"\s*:\s*"([^"]+)"/)?.[1] ?? null;
+}
+
+function listLength(value: any): number {
+  if (Array.isArray(value)) return value.length;
+  for (const key of ["contacts", "chats", "groups", "data", "participants"]) {
+    if (Array.isArray(value?.[key])) return value[key].length;
+  }
+  return 0;
+}
+
 export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
   server: {
     handlers: {
@@ -23,8 +50,30 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
         }
 
         let payload: any = null;
+        let raw = "";
         try {
-          const raw = await request.text();
+          raw = await request.text();
+          const rawEvent = extractEventFromRaw(raw);
+          const maxRawBytes = Number(process.env.WEBHOOK_MAX_STORED_PAYLOAD_BYTES ?? 250_000);
+          if (rawEvent && HEAVY_ACK_ONLY_EVENTS.has(rawEvent)) {
+            return new Response("ok");
+          }
+          if (rawEvent && LARGE_DEFERABLE_EVENTS.has(rawEvent) && raw.length > maxRawBytes) {
+            const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+            await supabaseAdmin.from("webhook_logs").insert({
+              instance_name: params.instance,
+              event: rawEvent,
+              payload: {
+                event: rawEvent,
+                data: {
+                  bulk_deferred: true,
+                  reason: "payload_too_large",
+                  raw_bytes: raw.length,
+                },
+              },
+            }).catch(() => null);
+            return new Response("ok");
+          }
           payload = raw ? JSON.parse(raw) : null;
         } catch { /* ignore */ }
         if (!payload) return new Response("ok");
@@ -32,6 +81,14 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
         const event: string = String(payload.event ?? "unknown");
         const data = payload.data ?? {};
         const instanceName = params.instance;
+
+        if (HEAVY_ACK_ONLY_EVENTS.has(event)) {
+          return new Response("ok");
+        }
+
+        const maxBulkItems = Number(process.env.WEBHOOK_MAX_BULK_ITEMS ?? 200);
+        const itemCount = listLength(data);
+        const shouldStoreSlimPayload = LARGE_DEFERABLE_EVENTS.has(event) && itemCount > maxBulkItems;
 
         try {
           const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -140,7 +197,17 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
           await supabaseAdmin.from("webhook_logs").insert({
             instance_name: instanceName,
             event,
-            payload: { event, data },
+            payload: shouldStoreSlimPayload
+              ? {
+                  event,
+                  data: {
+                    bulk_deferred: true,
+                    reason: "too_many_items",
+                    item_count: itemCount,
+                    raw_bytes: raw.length,
+                  },
+                }
+              : { event, data },
           });
         } catch (e) {
           console.error("[wa webhook] processing failed", e);

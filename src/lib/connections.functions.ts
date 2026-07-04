@@ -119,6 +119,12 @@ function safeToIso(ts: unknown): string {
   return isNaN(d.getTime()) ? now : d.toISOString();
 }
 
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
+
 
 
 
@@ -791,15 +797,27 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
     if (!connRow) throw new Error("Conexão não encontrada");
     const name = instanceNameFromConnection(connRow);
 
-    // Sync leve por padrão: grupos são necessários para seleção/migração;
-    // contatos e chats completos são dumps grandes e só rodam se ativados por env.
-    const syncContacts = String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() === "true";
-    const syncChats = String(process.env.WHATSAPP_SYNC_CHATS ?? "").toLowerCase() === "true";
-    const [contactsRes, chatsRes, groupsRes] = await Promise.allSettled([
-      syncContacts ? evolution.findContacts(name) : Promise.resolve([]),
-      syncChats ? evolution.findChats(name) : Promise.resolve([]),
-      evolution.fetchAllGroups(name),
-    ]);
+    // Sync ultra-leve por padrão: grupos são necessários para seleção/migração.
+    // Dumps completos de contatos/chats/mensagens sobrecarregam a Evolution e o
+    // Worker; só rodam quando explicitamente liberados por duas flags.
+    const allowHeavySync = String(process.env.WHATSAPP_ALLOW_HEAVY_SYNC ?? "").toLowerCase() === "true";
+    const syncContacts = allowHeavySync && String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() === "true";
+    const syncChats = allowHeavySync && String(process.env.WHATSAPP_SYNC_CHATS ?? "").toLowerCase() === "true";
+    const contactsLimit = Number(process.env.WHATSAPP_SYNC_CONTACTS_LIMIT ?? 500);
+    const chatsLimit = Number(process.env.WHATSAPP_SYNC_CHATS_LIMIT ?? 200);
+
+    let contactsRes: PromiseSettledResult<any[]> = { status: "fulfilled", value: [] };
+    let chatsRes: PromiseSettledResult<any[]> = { status: "fulfilled", value: [] };
+    const groupsRes = await Promise.resolve(evolution.fetchAllGroups(name))
+      .then((value) => ({ status: "fulfilled" as const, value }), (reason) => ({ status: "rejected" as const, reason }));
+    if (syncContacts) {
+      contactsRes = await Promise.resolve(evolution.findContacts(name))
+        .then((value) => ({ status: "fulfilled" as const, value: value.slice(0, contactsLimit) }), (reason) => ({ status: "rejected" as const, reason }));
+    }
+    if (syncChats) {
+      chatsRes = await Promise.resolve(evolution.findChats(name))
+        .then((value) => ({ status: "fulfilled" as const, value: value.slice(0, chatsLimit) }), (reason) => ({ status: "rejected" as const, reason }));
+    }
     const contactsRaw = contactsRes.status === "fulfilled" ? contactsRes.value : [];
     const chatsRaw = chatsRes.status === "fulfilled" ? chatsRes.value : [];
     const groupsRaw = groupsRes.status === "fulfilled" ? groupsRes.value : [];
@@ -857,8 +875,11 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
       const existingSet = new Set((existing ?? []).map((r: any) => r.phone));
       const toInsert = contactRows.filter((r) => !existingSet.has(r.phone));
       if (toInsert.length) {
-        const { error } = await context.supabase.from("contacts").insert(toInsert);
-        if (!error) contactsUpserted = toInsert.length;
+        for (const chunk of chunkArray(toInsert, 100)) {
+          const { error } = await context.supabase.from("contacts").insert(chunk);
+          if (error) break;
+          contactsUpserted += chunk.length;
+        }
       }
     }
 
@@ -891,8 +912,11 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
       const existingSet = new Set((existingConvs ?? []).map((r: any) => r.title));
       const toInsert = convRows.filter((r) => !existingSet.has(r.title));
       if (toInsert.length) {
-        const { error } = await context.supabase.from("conversations").insert(toInsert);
-        if (!error) conversationsUpserted = toInsert.length;
+        for (const chunk of chunkArray(toInsert, 100)) {
+          const { error } = await context.supabase.from("conversations").insert(chunk);
+          if (error) break;
+          conversationsUpserted += chunk.length;
+        }
       }
     }
 
@@ -916,10 +940,13 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
       })
       .filter(Boolean) as any[];
     if (groupRows.length) {
-      const { error } = await context.supabase
-        .from("whatsapp_groups")
-        .upsert(groupRows, { onConflict: "connection_id,jid" });
-      if (!error) groupsUpserted = groupRows.length;
+      for (const chunk of chunkArray(groupRows, 100)) {
+        const { error } = await context.supabase
+          .from("whatsapp_groups")
+          .upsert(chunk, { onConflict: "connection_id,jid" });
+        if (error) break;
+        groupsUpserted += chunk.length;
+      }
     }
 
     await context.supabase.from("connections")
