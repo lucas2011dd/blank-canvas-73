@@ -343,15 +343,25 @@ async function handleSessionDrop(
     },
   }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
 
-  // Backoff exponencial: 30s → 60s → 120s (teto 3min).
-  const baseMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_MS ?? 60_000);
-  const capMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_CAP_MS ?? 180_000);
+  // Backoff exponencial mais generoso: 3min → 6min → 12min (teto 15min).
+  // Backoffs curtos após queda de sessão faziam o próximo add cair no mesmo
+  // estado instável e derrubar a sessão de vez.
+  const baseMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_MS ?? 180_000);
+  const capMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_CAP_MS ?? 900_000);
   const backoffMs = Math.min(baseMs * (2 ** (failCount - 1)), capMs);
 
   await requeueTransientFailures(supabase, mig.id);
+  // Após 2 quedas consecutivas, auto-PAUSA a migração para o usuário revisar
+  // manualmente antes de continuar — melhor pausar do que insistir e queimar
+  // a sessão. O usuário reativa via botão "Retomar" no painel.
+  const autoPauseAt = Number(process.env.MIGRATION_AUTO_PAUSE_AFTER_DROPS ?? 2);
+  const shouldAutoPause = failCount >= autoPauseAt;
   await supabase.from("group_migrations").update({
-    next_attempt_at: new Date(Date.now() + backoffMs).toISOString(),
-    last_error: `Sessão oscilou (queda ${failCount}/${maxFails}). Reiniciando silenciosamente — nova tentativa em ${Math.round(backoffMs / 1000)}s.`,
+    status: shouldAutoPause ? "paused" : mig.status,
+    next_attempt_at: shouldAutoPause ? null : new Date(Date.now() + backoffMs).toISOString(),
+    last_error: shouldAutoPause
+      ? `Sessão oscilou ${failCount}x seguidas — migração PAUSADA automaticamente para proteger a conexão. Confirme se o WhatsApp está estável e clique em Retomar.`
+      : `Sessão oscilou (queda ${failCount}/${maxFails}). Aguardando ${Math.round(backoffMs / 1000)}s antes da próxima tentativa.`,
   }).eq("id", mig.id);
 
   return { decision: "graceful_retry", failCount };
