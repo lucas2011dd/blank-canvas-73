@@ -209,7 +209,22 @@ async function _processGroupMigrationBatchInner(supabase: any, migrationId: stri
     try {
       const resolved = await resolveEvolutionStatus(instance);
       if (resolved.status === "online") {
-        await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+        // Reconciliação: limpa breadcrumbs antigos de drops para que o próximo
+        // tick não interprete metadata legado como "pareamento perdido".
+        const cleanMeta = { ...(conn.metadata ?? {}) } as Record<string, unknown>;
+        delete cleanMeta.pairing_lost_at;
+        delete cleanMeta.pairing_lost_reason;
+        delete cleanMeta.device_removed_at;
+        delete cleanMeta.status_reason;
+        delete cleanMeta.last_evolution_error_code;
+        cleanMeta.evolution_instance = instance;
+        cleanMeta.evolution_state = "open";
+        await supabase.from("connections").update({
+          status: "online",
+          qr_code: null,
+          last_seen_online_at: new Date().toISOString(),
+          metadata: cleanMeta,
+        }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
       } else {
         const state = await evolution.state(instance).catch(() => null);
         const sessionRemoved = isLoggedOutEvolutionError(state) || pairingLostSignal(conn, state);
