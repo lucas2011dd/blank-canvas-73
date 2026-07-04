@@ -35,6 +35,46 @@ function listLength(value: any): number {
   return 0;
 }
 
+async function readBodyPreview(request: Request, limitBytes: number): Promise<{ text: string; exceeded: boolean; bytes: number }> {
+  if (!request.body) {
+    const text = await request.text();
+    return { text, exceeded: false, bytes: text.length };
+  }
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let exceeded = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limitBytes) {
+        exceeded = true;
+        const remaining = Math.max(0, limitBytes - (bytes - value.byteLength));
+        if (remaining > 0) chunks.push(value.slice(0, remaining));
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return { text: new TextDecoder().decode(concatBytes(chunks)), exceeded, bytes };
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
   server: {
     handlers: {
@@ -52,23 +92,24 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
         let payload: any = null;
         let raw = "";
         try {
-          raw = await request.text();
-          const rawEvent = extractEventFromRaw(raw);
           const maxRawBytes = Number(process.env.WEBHOOK_MAX_STORED_PAYLOAD_BYTES ?? 250_000);
+          const body = await readBodyPreview(request, maxRawBytes);
+          raw = body.text;
+          const rawEvent = extractEventFromRaw(raw);
           if (rawEvent && HEAVY_ACK_ONLY_EVENTS.has(rawEvent)) {
             return new Response("ok");
           }
-          if (rawEvent && LARGE_DEFERABLE_EVENTS.has(rawEvent) && raw.length > maxRawBytes) {
+          if (body.exceeded) {
             const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
             await supabaseAdmin.from("webhook_logs").insert({
               instance_name: params.instance,
-              event: rawEvent,
+              event: rawEvent ?? "large_payload",
               payload: {
-                event: rawEvent,
+                event: rawEvent ?? "large_payload",
                 data: {
                   bulk_deferred: true,
                   reason: "payload_too_large",
-                  raw_bytes: raw.length,
+                  raw_bytes: body.bytes,
                 },
               },
             }).catch(() => null);
