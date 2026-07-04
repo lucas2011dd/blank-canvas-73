@@ -61,6 +61,14 @@ function participantPhone(p: any): string {
   );
 }
 
+function phoneKey(value: unknown): string {
+  const phone = digits(value);
+  // Brasil: às vezes a Evolution/WhatsApp alterna 55 + DDD + 8/9 dígitos.
+  // Usar os últimos 8 dígitos como alias evita falso "failed" quando o retorno
+  // vem com/sem DDI ou com nono dígito divergente.
+  return phone.length > 8 ? phone.slice(-8) : phone;
+}
+
 function isLoggedOutEvolutionError(error: unknown): boolean {
   const haystack = typeof error === "object" && error !== null
     ? JSON.stringify(error, Object.getOwnPropertyNames(error)).toLowerCase()
@@ -494,14 +502,17 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     const byPhone: Record<string, any> = {};
     for (const item of list) {
       const phone = participantPhone(item);
-      if (phone) byPhone[phone] = item;
+      if (phone) {
+        byPhone[phone] = item;
+        byPhone[phoneKey(phone)] = item;
+      }
     }
 
     // Não fazer nenhuma leitura de participantes após o add. A decisão de
     // sucesso/falha vem 100% do retorno do próprio addGroupParticipants().
     for (const t of batch) {
       const expectedPhone = sendPhoneFor(t.phone);
-      const resolvedIt = byPhone[expectedPhone] ?? byPhone[t.phone];
+      const resolvedIt = byPhone[expectedPhone] ?? byPhone[t.phone] ?? byPhone[phoneKey(expectedPhone)] ?? byPhone[phoneKey(t.phone)];
       const rawStatus = String(resolvedIt?.status ?? resolvedIt?.result ?? "").toLowerCase();
       const apiSuccess = rawStatus === "success" || rawStatus === "200" || resolvedIt?.success === true;
       const apiSkipped = rawStatus === "skipped" || rawStatus === "already_in_group";
