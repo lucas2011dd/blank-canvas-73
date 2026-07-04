@@ -47,7 +47,7 @@ function Layout() {
       <div className="min-h-dvh flex w-full overflow-x-hidden">
         <AppSidebar />
         <SidebarInset className="min-w-0">
-          <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-background/80 px-3 sm:px-4 backdrop-blur">
+          <header className="glass sticky top-0 z-30 flex h-14 items-center justify-between border-b border-transparent px-3 sm:px-5">
             <div className="flex items-center gap-2">
               <SidebarTrigger />
             </div>
@@ -55,8 +55,8 @@ function Layout() {
               <ThemeToggle />
             </div>
           </header>
-          {/* Padding fluido: 1rem no mobile → 1.5rem no desktop; min-w-0 impede overflow horizontal quando filhos usam grid/flex */}
-          <main className="flex-1 min-w-0 p-4 sm:p-6">
+          {/* Grid 8pt: padding fluido; min-w-0 impede overflow quando filhos usam grid/flex */}
+          <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8">
             <Outlet />
           </main>
         </SidebarInset>
