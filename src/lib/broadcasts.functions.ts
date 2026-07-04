@@ -7,6 +7,28 @@ function renderTemplate(tpl: string, vars: Record<string, string>) {
   return tpl.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
 }
 
+function safeNumberAtLeast(value: unknown, fallback: number, floor: number) {
+  const n = Number(value ?? fallback);
+  return Math.max(floor, Number.isFinite(n) ? n : fallback);
+}
+
+function broadcastDelayMs(bc: { min_delay_seconds?: number | null; max_delay_seconds?: number | null }) {
+  const minFloor = safeNumberAtLeast(process.env.BROADCAST_MIN_DELAY_FLOOR_SECONDS, 30, 30);
+  const maxFloor = safeNumberAtLeast(process.env.BROADCAST_MAX_DELAY_FLOOR_SECONDS, 90, 90);
+  const min = Math.max(Number(bc.min_delay_seconds ?? 30), minFloor);
+  const max = Math.max(Number(bc.max_delay_seconds ?? 90), maxFloor, min);
+  const delaySec = Math.floor(min + Math.random() * (max - min + 1));
+  return delaySec * 1000;
+}
+
+async function syncBroadcastCounters(db: any, broadcastId: string) {
+  const [{ count: sent }, { count: failed }] = await Promise.all([
+    db.from("broadcast_targets").select("id", { count: "exact", head: true }).eq("broadcast_id", broadcastId).eq("status", "sent"),
+    db.from("broadcast_targets").select("id", { count: "exact", head: true }).eq("broadcast_id", broadcastId).eq("status", "failed"),
+  ]);
+  await db.from("broadcasts").update({ sent_count: sent ?? 0, failed_count: failed ?? 0 }).eq("id", broadcastId);
+}
+
 export const listBroadcasts = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
@@ -48,10 +70,14 @@ export const createBroadcast = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => createSchema.parse(d))
   .handler(async ({ context, data }) => {
     if (data.maxDelaySeconds < data.minDelaySeconds) throw new Error("Delay máximo deve ser ≥ mínimo");
-    const minFloor = Number(process.env.BROADCAST_MIN_DELAY_FLOOR_SECONDS ?? 30);
-    const maxFloor = Number(process.env.BROADCAST_MAX_DELAY_FLOOR_SECONDS ?? 90);
-    const safeMinDelay = Math.max(data.minDelaySeconds, Number.isFinite(minFloor) ? minFloor : 30);
-    const safeMaxDelay = Math.max(data.maxDelaySeconds, Number.isFinite(maxFloor) ? maxFloor : 90, safeMinDelay);
+    const minFloor = safeNumberAtLeast(process.env.BROADCAST_MIN_DELAY_FLOOR_SECONDS, 30, 30);
+    const maxFloor = safeNumberAtLeast(process.env.BROADCAST_MAX_DELAY_FLOOR_SECONDS, 90, 90);
+    const safeMinDelay = Math.max(data.minDelaySeconds, minFloor);
+    const safeMaxDelay = Math.max(data.maxDelaySeconds, maxFloor, safeMinDelay);
+
+    const { data: conn } = await context.supabase.from("connections")
+      .select("id,status").eq("id", data.connectionId).eq("user_id", context.userId).eq("provider", "whatsapp").maybeSingle();
+    if (!conn) throw new Error("Conexão WhatsApp não encontrada");
 
     // Resolve alvos
     const { phoneMatchesBrFilter } = await import("@/lib/br-ddd");
@@ -170,11 +196,20 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
     const nowIso = new Date().toISOString();
     const { data: due } = await context.supabase.from("broadcast_targets")
       .select("*").eq("broadcast_id", bc.id).eq("status", "pending")
-      .lte("next_attempt_at", nowIso).order("next_attempt_at").limit(data.max);
+      .lte("next_attempt_at", nowIso).order("next_attempt_at").limit(1);
 
     const results: Array<{ id: string; ok: boolean; error?: string }> = [];
-    for (const t of due ?? []) {
-      await context.supabase.from("broadcast_targets").update({ status: "sending" }).eq("id", t.id);
+    for (const selected of due ?? []) {
+      const { data: claimed } = await context.supabase.from("broadcast_targets")
+        .update({ status: "sending" })
+        .eq("id", selected.id)
+        .eq("broadcast_id", bc.id)
+        .eq("status", "pending")
+        .lte("next_attempt_at", nowIso)
+        .select("*")
+        .maybeSingle();
+      if (!claimed) continue;
+      const t = claimed;
       const body = renderTemplate(bc.template, { nome: t.name ?? "", name: t.name ?? "", telefone: t.phone });
       try {
         await evolution.sendText(instance, t.phone, body);
@@ -209,7 +244,7 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
           }).eq("id", conn.id).eq("user_id", context.userId);
           await context.supabase.from("broadcast_targets").update({
             status: "pending",
-            next_attempt_at: new Date(Date.now() + 30_000).toISOString(),
+            next_attempt_at: new Date(Date.now() + Math.max(30_000, broadcastDelayMs(bc))).toISOString(),
             error: "Evolution instável; alvo mantido na fila sem restart automático",
           } as any).eq("id", t.id);
           break;
@@ -221,16 +256,10 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
       }
 
       // Marca próximo tick com delay aleatório
-      const minFloor = Number(process.env.BROADCAST_MIN_DELAY_FLOOR_SECONDS ?? 30);
-      const maxFloor = Number(process.env.BROADCAST_MAX_DELAY_FLOOR_SECONDS ?? 90);
-      const min = Math.max(bc.min_delay_seconds ?? 30, Number.isFinite(minFloor) ? minFloor : 30);
-      const max = Math.max(bc.max_delay_seconds ?? 90, Number.isFinite(maxFloor) ? maxFloor : 90, min);
-      const delaySec = Math.floor(min + Math.random() * (max - min + 1));
-      const nextAt = new Date(Date.now() + delaySec * 1000).toISOString();
+      const nextAt = new Date(Date.now() + broadcastDelayMs(bc)).toISOString();
       await context.supabase.from("broadcast_targets")
         .update({ next_attempt_at: nextAt })
-        .eq("broadcast_id", bc.id).eq("status", "pending")
-        .order("next_attempt_at", { ascending: true }).limit(1);
+        .eq("broadcast_id", bc.id).eq("status", "pending");
       // pausa curta entre envios do MESMO tick (anti-flood do próprio worker)
       await new Promise((r) => setTimeout(r, 500));
     }
@@ -238,10 +267,7 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
     const okCount = results.filter((r) => r.ok).length;
     const failCount = results.length - okCount;
     if (okCount || failCount) {
-      await context.supabase.from("broadcasts").update({
-        sent_count: (bc.sent_count ?? 0) + okCount,
-        failed_count: (bc.failed_count ?? 0) + failCount,
-      }).eq("id", bc.id);
+      await syncBroadcastCounters(context.supabase, bc.id);
     }
 
     // Verifica conclusão

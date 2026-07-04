@@ -16,6 +16,27 @@ function rateLimited(ip: string): boolean {
   return bucket.count > 60;
 }
 
+function safeNumberAtLeast(value: unknown, fallback: number, floor: number) {
+  const n = Number(value ?? fallback);
+  return Math.max(floor, Number.isFinite(n) ? n : fallback);
+}
+
+function broadcastDelayMs(bc: { min_delay_seconds?: number | null; max_delay_seconds?: number | null }) {
+  const minFloor = safeNumberAtLeast(process.env.BROADCAST_MIN_DELAY_FLOOR_SECONDS, 30, 30);
+  const maxFloor = safeNumberAtLeast(process.env.BROADCAST_MAX_DELAY_FLOOR_SECONDS, 90, 90);
+  const min = Math.max(Number(bc.min_delay_seconds ?? 30), minFloor);
+  const max = Math.max(Number(bc.max_delay_seconds ?? 90), maxFloor, min);
+  return Math.floor(min + Math.random() * (max - min + 1)) * 1000;
+}
+
+async function syncBroadcastCounters(db: any, broadcastId: string) {
+  const [{ count: sent }, { count: failed }] = await Promise.all([
+    db.from("broadcast_targets").select("id", { count: "exact", head: true }).eq("broadcast_id", broadcastId).eq("status", "sent"),
+    db.from("broadcast_targets").select("id", { count: "exact", head: true }).eq("broadcast_id", broadcastId).eq("status", "failed"),
+  ]);
+  await db.from("broadcasts").update({ sent_count: sent ?? 0, failed_count: failed ?? 0 }).eq("id", broadcastId);
+}
+
 export const Route = createFileRoute("/api/public/wa/tick")({
   server: {
     handlers: {
@@ -225,6 +246,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         const { processGroupMigrationBatch } = await import("@/lib/migrations.server");
         const migResults: any[] = [];
         const migrationConnectionsTouched = new Set<string>();
+        const sendConnectionsTouched = new Set<string>();
 
         let pass = 0;
         const maxPasses = Number(process.env.TICK_MAX_PASSES ?? 3);
@@ -241,8 +263,9 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           for (const bc of running ?? []) {
             if (Date.now() >= deadline) break;
             if (activeMigrationConnectionIds.has(bc.connection_id)) continue;
+            if (sendConnectionsTouched.has(bc.connection_id)) continue;
             const { data: conn } = await supabaseAdmin.from("connections")
-              .select("status,metadata").eq("id", bc.connection_id).maybeSingle();
+              .select("status,metadata").eq("id", bc.connection_id).eq("user_id", bc.user_id).maybeSingle();
             if (!conn) continue;
             const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(bc.connection_id).replace(/-/g, "")}`;
 
@@ -264,8 +287,8 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             const { data: due } = await supabaseAdmin.from("broadcast_targets")
               .select("*").eq("broadcast_id", bc.id).eq("status", "pending")
               .lte("next_attempt_at", nowIsoPass).order("next_attempt_at").limit(1);
-            const t = due?.[0];
-            if (!t) {
+            const selected = due?.[0];
+            if (!selected) {
               const { count: pending } = await supabaseAdmin.from("broadcast_targets")
                 .select("id", { count: "exact", head: true }).eq("broadcast_id", bc.id).eq("status", "pending");
               if ((pending ?? 0) === 0) {
@@ -277,7 +300,18 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               continue;
             }
 
-            await supabaseAdmin.from("broadcast_targets").update({ status: "sending" }).eq("id", t.id);
+            const { data: claimed } = await supabaseAdmin.from("broadcast_targets")
+              .update({ status: "sending" })
+              .eq("id", selected.id)
+              .eq("broadcast_id", bc.id)
+              .eq("status", "pending")
+              .lte("next_attempt_at", nowIsoPass)
+              .select("*")
+              .maybeSingle();
+            if (!claimed) continue;
+            const t = claimed;
+            sendConnectionsTouched.add(bc.connection_id);
+            didWork = true;
             const body = (bc.template as string).replace(/\{(\w+)\}/g, (_, k) => {
               if (k === "nome" || k === "name") return t.name ?? "";
               if (k === "telefone") return t.phone ?? "";
@@ -288,9 +322,8 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               await supabaseAdmin.from("broadcast_targets").update({
                 status: "sent", sent_at: new Date().toISOString(),
               }).eq("id", t.id);
-              await supabaseAdmin.from("broadcasts").update({ sent_count: (bc.sent_count ?? 0) + 1 }).eq("id", bc.id);
+              await syncBroadcastCounters(supabaseAdmin, bc.id);
               summary.broadcasts++;
-              didWork = true;
             } catch (e: any) {
               if (isPairingLostEvolutionError(e)) {
                 await supabaseAdmin.from("broadcast_targets").update({
@@ -299,6 +332,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 }).eq("id", t.id);
                 await markConnectionReauthRequired(supabaseAdmin, {
                   connectionId: bc.connection_id,
+                  userId: bc.user_id,
                   instanceName: instance,
                   reason: String(e?.message ?? "device_removed"),
                 });
@@ -319,33 +353,21 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 }).eq("id", bc.connection_id);
                 await supabaseAdmin.from("broadcast_targets").update({
                   status: "pending",
-                  next_attempt_at: new Date(Date.now() + recoveryMs).toISOString(),
+                  next_attempt_at: new Date(Date.now() + Math.max(recoveryMs, broadcastDelayMs(bc))).toISOString(),
                   error: "Reconectando WhatsApp sem novo QR; alvo mantido na fila",
                 }).eq("id", t.id);
-                didWork = true;
                 continue;
               }
               await supabaseAdmin.from("broadcast_targets").update({
                 status: "failed", error: String(e?.message ?? "erro"),
               }).eq("id", t.id);
-              await supabaseAdmin.from("broadcasts").update({ failed_count: (bc.failed_count ?? 0) + 1 }).eq("id", bc.id);
+              await syncBroadcastCounters(supabaseAdmin, bc.id);
               summary.errors++;
-              didWork = true;
             }
 
-            const minFloor = Number(process.env.BROADCAST_MIN_DELAY_FLOOR_SECONDS ?? 30);
-            const maxFloor = Number(process.env.BROADCAST_MAX_DELAY_FLOOR_SECONDS ?? 90);
-            const min = Math.max(bc.min_delay_seconds ?? 30, Number.isFinite(minFloor) ? minFloor : 30);
-            const max = Math.max(bc.max_delay_seconds ?? 90, Number.isFinite(maxFloor) ? maxFloor : 90, min);
-            const delaySec = Math.floor(min + Math.random() * (max - min + 1));
-            const nextAt = new Date(Date.now() + delaySec * 1000).toISOString();
-            const { data: nextRow } = await supabaseAdmin.from("broadcast_targets")
-              .select("id").eq("broadcast_id", bc.id).eq("status", "pending")
-              .order("next_attempt_at").limit(1).maybeSingle();
-            if (nextRow) {
-              await supabaseAdmin.from("broadcast_targets")
-                .update({ next_attempt_at: nextAt }).eq("id", nextRow.id);
-            }
+            const nextAt = new Date(Date.now() + broadcastDelayMs(bc)).toISOString();
+            await supabaseAdmin.from("broadcast_targets")
+              .update({ next_attempt_at: nextAt }).eq("broadcast_id", bc.id).eq("status", "pending");
           }
 
           if (Date.now() >= deadline) break;
@@ -358,8 +380,9 @@ export const Route = createFileRoute("/api/public/wa/tick")({
           for (const row of sched ?? []) {
             if (Date.now() >= deadline) break;
             if (activeMigrationConnectionIds.has(row.connection_id)) continue;
+            if (sendConnectionsTouched.has(row.connection_id)) continue;
             const { data: conn } = await supabaseAdmin.from("connections")
-              .select("status,metadata").eq("id", row.connection_id).maybeSingle();
+              .select("status,metadata").eq("id", row.connection_id).eq("user_id", row.user_id).maybeSingle();
             if (!conn) continue;
             const instance = (conn.metadata as any)?.evolution_instance ?? `ch_${String(row.connection_id).replace(/-/g, "")}`;
             if (conn.status !== "online") {
@@ -376,20 +399,29 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               }).eq("id", row.connection_id);
               continue;
             }
+            const { data: claimed } = await supabaseAdmin.from("scheduled_messages")
+              .update({ status: "sending" })
+              .eq("id", row.id)
+              .eq("status", "pending")
+              .lte("scheduled_at", nowIsoPass)
+              .select("*")
+              .maybeSingle();
+            if (!claimed) continue;
+            sendConnectionsTouched.add(row.connection_id);
+            didWork = true;
             try {
-              await evolution.sendText(instance, row.target, row.body);
+              await evolution.sendText(instance, claimed.target, claimed.body);
               await supabaseAdmin.from("scheduled_messages").update({
-                status: "sent", sent_at: new Date().toISOString(), attempts: (row.attempts ?? 0) + 1,
-              }).eq("id", row.id);
+                status: "sent", sent_at: new Date().toISOString(), attempts: (claimed.attempts ?? 0) + 1,
+              }).eq("id", claimed.id);
               summary.scheduled++;
-              didWork = true;
-              if (row.recurrence === "daily" || row.recurrence === "weekly") {
-                const step = row.recurrence === "daily" ? 1 : 7;
-                const nextAt = new Date(new Date(row.scheduled_at).getTime() + step * 86400_000).toISOString();
+              if (claimed.recurrence === "daily" || claimed.recurrence === "weekly") {
+                const step = claimed.recurrence === "daily" ? 1 : 7;
+                const nextAt = new Date(new Date(claimed.scheduled_at).getTime() + step * 86400_000).toISOString();
                 await supabaseAdmin.from("scheduled_messages").insert({
-                  user_id: row.user_id, connection_id: row.connection_id,
-                  target_kind: row.target_kind, target: row.target, target_label: row.target_label,
-                  body: row.body, scheduled_at: nextAt, recurrence: row.recurrence, status: "pending",
+                  user_id: claimed.user_id, connection_id: claimed.connection_id,
+                  target_kind: claimed.target_kind, target: claimed.target, target_label: claimed.target_label,
+                  body: claimed.body, scheduled_at: nextAt, recurrence: claimed.recurrence, status: "pending",
                 });
               }
             } catch (e: any) {
@@ -397,10 +429,11 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 await supabaseAdmin.from("scheduled_messages").update({
                   status: "pending",
                   last_error: REAUTH_REQUIRED_MESSAGE,
-                  attempts: (row.attempts ?? 0) + 1,
-                }).eq("id", row.id);
+                  attempts: (claimed.attempts ?? 0) + 1,
+                }).eq("id", claimed.id);
                 await markConnectionReauthRequired(supabaseAdmin, {
                   connectionId: row.connection_id,
+                  userId: row.user_id,
                   instanceName: instance,
                   reason: String(e?.message ?? "device_removed"),
                 });
@@ -423,16 +456,14 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                   status: "pending",
                   scheduled_at: new Date(Date.now() + recoveryMs).toISOString(),
                   last_error: "Reconectando WhatsApp sem novo QR; envio será tentado novamente",
-                  attempts: (row.attempts ?? 0) + 1,
-                }).eq("id", row.id);
-                didWork = true;
+                  attempts: (claimed.attempts ?? 0) + 1,
+                }).eq("id", claimed.id);
                 continue;
               }
               await supabaseAdmin.from("scheduled_messages").update({
-                status: "failed", last_error: String(e?.message ?? "erro"), attempts: (row.attempts ?? 0) + 1,
-              }).eq("id", row.id);
+                status: "failed", last_error: String(e?.message ?? "erro"), attempts: (claimed.attempts ?? 0) + 1,
+              }).eq("id", claimed.id);
               summary.errors++;
-              didWork = true;
             }
           }
 

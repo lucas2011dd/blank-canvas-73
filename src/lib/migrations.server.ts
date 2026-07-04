@@ -27,8 +27,8 @@ function automationDelaySeconds(minValue: unknown, maxValue: unknown): number {
   // device_removed no Baileys. 60-180s é a janela recomendada por operadores
   // de larga escala. Se o usuário configurou algo menor na UI, sobrescrevemos
   // silenciosamente pelo floor — priorizamos manter a sessão viva.
-  const minFloor = Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 60);
-  const maxFloor = Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 180);
+  const minFloor = Math.max(60, Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 60));
+  const maxFloor = Math.max(180, Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 180));
   const min = Math.max(
     Number.isFinite(Number(minValue)) ? Number(minValue) : 60,
     Number.isFinite(minFloor) ? minFloor : 60,
@@ -259,7 +259,7 @@ async function handleSessionDrop(
   const meta = (conn?.metadata as Record<string, any> | null) ?? {};
   const prev = Number(meta.session_drop_count ?? 0);
   const failCount = prev + 1;
-  const maxFails = Number(process.env.MIGRATION_MAX_SESSION_DROPS ?? 3);
+  const maxFails = Math.max(6, Number(process.env.MIGRATION_MAX_SESSION_DROPS ?? 6));
   const reasonStr = typeof reason === "string" ? reason : (reason as any)?.message ?? JSON.stringify(reason);
 
   await auditLog(supabase, {
@@ -414,7 +414,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     // connections.last_reconnect_attempt_at — antes era um Map em globalThis
     // que não protegia entre processos/réplicas. Cooldown curto por padrão:
     // 10min deixava a conexão presa em "Conectando" após uma tentativa falha.
-    const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 90_000);
+    const cooldownMs = Math.max(120_000, Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 300_000));
     const cutoffIso = new Date(Date.now() - cooldownMs).toISOString();
     const { data: reconnectClaim } = await supabase.from("connections")
       .update({ last_reconnect_attempt_at: new Date().toISOString() })
@@ -531,7 +531,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   const lastAddedAt = (mig.metadata as any)?.last_batch_at
     ? new Date((mig.metadata as any).last_batch_at).getTime()
     : 0;
-  const minIntervalMs = Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 60_000);
+  const minIntervalMs = Math.max(60_000, Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 60_000));
   const elapsed = Date.now() - lastAddedAt;
   if (elapsed < minIntervalMs) {
     const waitMs = Math.max(1_000, minIntervalMs - elapsed);

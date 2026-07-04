@@ -329,10 +329,16 @@ export async function drainWebhookQueue(
       .limit(5);
     if (!rows?.length) break;
 
-    for (const row of rows) {
+    for (const selected of rows) {
       if (Date.now() >= deadline) break;
-      await admin.from("webhook_logs")
-        .update({ status: "processing" }).eq("id", row.id);
+      const { data: row } = await admin.from("webhook_logs")
+        .update({ status: "processing" })
+        .eq("id", selected.id)
+        .eq("status", "pending")
+        .lte("next_attempt_at", nowIso)
+        .select("id,instance_name,event,payload,attempts")
+        .maybeSingle();
+      if (!row) continue;
       try {
         await handleEvent(admin, row.instance_name, row.event, row.payload);
         await admin.from("webhook_logs").update({
