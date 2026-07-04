@@ -3,8 +3,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useRef, useState } from "react";
 import { FileUp, Users, RefreshCw, FileDown } from "lucide-react";
-import Papa from "papaparse";
-import * as XLSX from "xlsx";
+// papaparse & xlsx are lazy-loaded on demand (see handleFile/exportAll)
+// to keep them out of the initial route chunk (~500KB combined).
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -37,10 +37,12 @@ function Page() {
       let items: ImportRow[] = [];
       if (ext === "csv") {
         const text = await f.text();
+        const { default: Papa } = await import("papaparse");
         const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });
         items = parsed.data.map((r) => ({ name: r.name || r.Nome || "", phone: r.phone || r.Telefone, email: r.email || r.Email, company: r.company || r.Empresa, city: r.city || r.Cidade })).filter((i) => i.name);
       } else if (ext === "xlsx" || ext === "xls") {
         const buf = await f.arrayBuffer();
+        const XLSX = await import("xlsx");
         const wb = XLSX.read(buf); const ws = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json<Record<string, string>>(ws);
         items = rows.map((r) => ({ name: r.name || r.Nome || "", phone: r.phone || r.Telefone, email: r.email || r.Email, company: r.company || r.Empresa, city: r.city || r.Cidade })).filter((i) => i.name);
@@ -60,6 +62,7 @@ function Page() {
       const rows = contacts.map((c) => [c.name, c.phone, c.email, c.company, c.city].map((v) => `"${(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
       download(header + rows, `contatos-${Date.now()}.csv`, "text/csv");
     } else if (format === "xlsx") {
+      const XLSX = await import("xlsx");
       const ws = XLSX.utils.json_to_sheet(contacts.map((c) => ({ Nome: c.name, Telefone: c.phone, Email: c.email, Empresa: c.company, Cidade: c.city })));
       const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Contatos");
       XLSX.writeFile(wb, `contatos-${Date.now()}.xlsx`);
