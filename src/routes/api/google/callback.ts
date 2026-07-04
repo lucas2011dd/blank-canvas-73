@@ -15,8 +15,11 @@ export const Route = createFileRoute("/api/google/callback")({
         const userId = verifyOAuthState(url.searchParams.get("state"));
         if (!userId) return new Response("invalid state", { status: 400 });
 
-        const clientId = process.env.GOOGLE_CLIENT_ID!;
-        const clientSecret = process.env.GOOGLE_CLIENT_SECRET!;
+        const clientId = process.env.GOOGLE_CLIENT_ID;
+        const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+        if (!clientId || !clientSecret) {
+          return new Response("Google OAuth não configurado no servidor", { status: 500 });
+        }
         const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT ?? `${url.origin}/api/google/callback`;
 
         const tokRes = await fetch("https://oauth2.googleapis.com/token", {
