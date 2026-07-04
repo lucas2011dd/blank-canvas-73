@@ -138,6 +138,24 @@ async function requeueTransientFailures(supabase: any, migrationId: string) {
   return failedRows.length;
 }
 
+async function updateMigrationSafe(supabase: any, migrationId: string, patch: Record<string, unknown>) {
+  const { error } = await supabase.from("group_migrations").update(patch).eq("id", migrationId);
+  if (!error) return;
+
+  // Compatibilidade self-hosted: versões antigas do banco não tinham
+  // group_migrations.metadata. Não deixa o batch quebrar depois de já ter
+  // adicionado participante; salva o essencial e registra auditoria via logs.
+  const msg = String(error.message ?? error).toLowerCase();
+  if ("metadata" in patch && (msg.includes("metadata") || msg.includes("schema cache") || msg.includes("column"))) {
+    const { metadata: _metadata, ...withoutMetadata } = patch;
+    const retry = await supabase.from("group_migrations").update(withoutMetadata).eq("id", migrationId);
+    if (!retry.error) return;
+    throw new Error(retry.error.message ?? String(retry.error));
+  }
+
+  throw new Error(error.message ?? String(error));
+}
+
 // CORREÇÃO CRÍTICA (itens 1 e 2):
 // Lock distribuído por CONEXÃO — via UPDATE atômico condicional na coluna
 // connections.processing_until (migration 008_migration_locks.sql). Isso
@@ -568,7 +586,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       const consecutive = Number((mig.metadata as any)?.consecutive_transient_failures ?? 0);
       const retryDelayMs = Math.min(baseMs * (2 ** consecutive), capMs);
       const nextConsecutive = consecutive + 1;
-      await supabase.from("group_migrations").update({
+      await updateMigrationSafe(supabase, mig.id, {
         failed_count: effectiveFailedCount,
         next_attempt_at: new Date(Date.now() + retryDelayMs).toISOString(),
         last_error: `Conexão instável durante adição — retry automático em ${Math.round(retryDelayMs / 1000)}s (falha ${nextConsecutive}, backoff exponencial)`,
@@ -578,7 +596,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
           consecutive_transient_failures: nextConsecutive,
           last_transient_failure_at: new Date().toISOString(),
         },
-      }).eq("id", mig.id);
+      });
       // Log de auditoria para acompanhar o padrão de falhas transientes.
       try {
         await supabase.from("audit_logs").insert({
@@ -618,7 +636,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   };
   if (hadProgress) nextMeta.consecutive_transient_failures = 0;
 
-  await supabase.from("group_migrations").update({
+  await updateMigrationSafe(supabase, mig.id, {
     status: done ? "completed" : "running",
     added_count: (mig.added_count ?? 0) + added,
     failed_count: effectiveFailedCount + failed,
@@ -627,7 +645,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     finished_at: done ? new Date().toISOString() : null,
     last_error: Object.keys(errors).length ? Object.values(errors)[0] : null,
     metadata: nextMeta,
-  }).eq("id", mig.id);
+  });
 
   // Reset do contador de quedas de sessão quando o batch de fato progrediu.
   // Isso garante que uma oscilação isolada não conte para sempre — só quedas
