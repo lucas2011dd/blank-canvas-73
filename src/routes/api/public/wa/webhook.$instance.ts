@@ -14,6 +14,13 @@ const HEAVY_ACK_ONLY_EVENTS = new Set([
   "presence.update", "PRESENCE_UPDATE",
   "chats.upsert", "CHATS_UPSERT",
   "chats.update", "CHATS_UPDATE",
+  // Durante cada add em grupo, a Evolution/Baileys pode emitir payloads que
+  // crescem com o tamanho do grupo. Processar/parsear/enfileirar isso é a
+  // parte que fazia a VPS dar pico exatamente a cada catch. A migração não
+  // depende desses eventos; o estado real vem do retorno do updateParticipant.
+  "groups.upsert", "GROUPS_UPSERT",
+  "groups.update", "GROUPS_UPDATE",
+  "group-participants.update", "GROUP_PARTICIPANTS_UPDATE",
 ]);
 
 const LARGE_DEFERABLE_EVENTS = new Set([
@@ -92,7 +99,7 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
         let payload: any = null;
         let raw = "";
         try {
-          const maxRawBytes = Number(process.env.WEBHOOK_MAX_STORED_PAYLOAD_BYTES ?? 250_000);
+          const maxRawBytes = Number(process.env.WEBHOOK_MAX_STORED_PAYLOAD_BYTES ?? 64_000);
           const body = await readBodyPreview(request, maxRawBytes);
           raw = body.text;
           const rawEvent = extractEventFromRaw(raw);

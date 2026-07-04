@@ -252,12 +252,12 @@ export const evolution = {
   },
 
   async addGroupParticipants(instanceName: string, groupJid: string, participants: string[]): Promise<any> {
-    // Timeout de 30s: /updateParticipant pode levar 20-25s quando o WhatsApp
-    // valida números antes de adicionar; timeout curto gera device_removed
-    // na próxima tentativa.
+    // Timeout alto para grupos grandes: o custo do updateParticipant cresce
+    // com o tamanho do grupo no Baileys/Evolution. Timeout curto abortava no
+    // meio, gerava 409 no próximo catch e deixava a VPS sobrecarregada.
     return call<any>(
       `/group/updateParticipant/${encodeURIComponent(instanceName)}?groupJid=${encodeURIComponent(groupJid)}`,
-      { method: "POST", body: { action: "add", participants }, timeoutMs: 30_000 },
+      { method: "POST", body: { action: "add", participants }, timeoutMs: 90_000 },
     );
   },
 
