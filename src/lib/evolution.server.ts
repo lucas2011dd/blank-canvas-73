@@ -768,27 +768,13 @@ export async function resolveEvolutionStatus(instanceName: string): Promise<{
     if (statusFromState === "online") return { status: "online", state, usable: true };
   } catch (error) {
     stateError = error;
-    // Cai para fetchInstances apenas para descobrir estado/QR. Se também não
-    // conseguirmos falar com a Evolution, a chamada deve falhar em vez de
-    // marcar offline por engano e induzir reescaneamento de QR.
+    // Não usar /instance/fetchInstances como fallback: em servidores com muitas
+    // instâncias esse endpoint devolve a lista inteira e vira uma das maiores
+    // fontes de sobrecarga. Webhooks + connectionState são a fonte de verdade.
   }
-
-  let infoLookupFailed = false;
-  const info = await evolution.instanceInfoStrict(instanceName).catch(() => {
-    infoLookupFailed = true;
-    return undefined;
-  });
-  if (infoLookupFailed && stateError) throw stateError;
-  if (info === undefined) return { status: statusFromState, state: state ?? statusFromState, usable: false };
-  const infoState = extractEvolutionConnectionState(info);
-  if (payloadIndicatesPairingLost(info)) {
-    return { status: "offline", state: infoState ?? state ?? "device_removed", usable: false };
-  }
-  const infoStatus = evolutionStateToStatus(infoState);
-  if (infoStatus === "online") return { status: "online", state: infoState, usable: true };
-  if (infoStatus === "connecting") return { status: "connecting", state: infoState, usable: false };
+  if (stateError && !state) throw stateError;
   if (statusFromState === "connecting") return { status: "connecting", state, usable: false };
-  return { status: "offline", state: state ?? infoState ?? "not_connected", usable: false };
+  return { status: "offline", state: state ?? "not_connected", usable: false };
 }
 
 export async function reconnectEvolutionSession(
