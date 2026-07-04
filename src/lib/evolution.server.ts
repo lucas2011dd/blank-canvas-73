@@ -201,7 +201,7 @@ export const evolution = {
     const res = await call<any>(`/chat/findContacts/${encodeURIComponent(instanceName)}`, {
       method: "POST",
       body: { where: {} },
-    }).catch(() => []);
+    });
     return Array.isArray(res) ? res : (res?.contacts ?? res?.data ?? []);
   },
 
@@ -209,7 +209,7 @@ export const evolution = {
     const res = await call<any>(`/chat/findChats/${encodeURIComponent(instanceName)}`, {
       method: "POST",
       body: {},
-    }).catch(() => []);
+    });
     return Array.isArray(res) ? res : (res?.chats ?? res?.data ?? []);
   },
 
@@ -217,7 +217,7 @@ export const evolution = {
     const res = await call<any>(
       `/group/fetchAllGroups/${encodeURIComponent(instanceName)}?getParticipants=false`,
       { method: "GET" },
-    ).catch(() => []);
+    );
     return Array.isArray(res) ? res : (res?.groups ?? res?.data ?? []);
   },
 
