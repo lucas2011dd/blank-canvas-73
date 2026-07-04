@@ -805,7 +805,11 @@ export async function reconnectEvolutionSession(
   // de latência da Evolution isso multiplicava restarts por tick e podia
   // derrubar uma sessão que ainda estava viva.
   if (!before) {
-    let latest = { status: "connecting" as EvolutionConnectionStatus, state: "status_probe_failed", usable: false };
+    let latest: { status: EvolutionConnectionStatus; state?: string; usable: boolean } = {
+      status: "connecting",
+      state: "status_probe_failed",
+      usable: false,
+    };
     for (let attempt = 0; attempt < attempts; attempt++) {
       await wait(delayMs + attempt * 500);
       latest = await resolveEvolutionStatus(instanceName).catch(() => latest);
