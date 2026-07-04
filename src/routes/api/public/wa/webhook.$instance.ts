@@ -51,19 +51,21 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
             if (conn) {
               // Auditoria da queda com código exato (515, 401, 428, ...).
               if (status !== "online") {
-                await supabaseAdmin.from("audit_logs").insert({
-                  user_id: conn.user_id,
-                  action: "whatsapp_connection_drop",
-                  entity: "connection",
-                  entity_id: conn.id,
-                  metadata: {
-                    instance: instanceName,
-                    event, state, status,
-                    error_code: errorCode,
-                    status_reason: data.statusReason ?? data.reason ?? null,
-                    detected_via: "webhook_fast_path",
-                  },
-                }).catch(() => null);
+                try {
+                  await supabaseAdmin.from("audit_logs").insert({
+                    user_id: conn.user_id,
+                    action: "whatsapp_connection_drop",
+                    entity: "connection",
+                    entity_id: conn.id,
+                    metadata: {
+                      instance: instanceName,
+                      event, state, status,
+                      error_code: errorCode,
+                      status_reason: data.statusReason ?? data.reason ?? null,
+                      detected_via: "webhook_fast_path",
+                    },
+                  });
+                } catch { /* audit é best-effort */ }
               }
 
               const reason = String(data.statusReason ?? data.reason ?? errorCode ?? "").toLowerCase();
