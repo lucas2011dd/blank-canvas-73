@@ -15,8 +15,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { listConnections, listWhatsappGroups } from "@/lib/connections.functions";
 import {
   controlGroupMigration, listGroupMigrations, previewGroupParticipants,
-  runGroupMigrationNow, startGroupMigration,
+  runGroupMigrationNow, startGroupMigration, tickMyMigrations,
 } from "@/lib/migrations.functions";
+
 import { BrGeoFilter } from "@/components/br-geo-filter";
 
 const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
@@ -46,6 +47,27 @@ function Page() {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [qc]);
+
+  // Auto-tick client-side: enquanto houver migração "running", dispara o
+  // worker do usuário a cada 15s para que os batches avancem sozinhos sem
+  // depender de cron externo nem de cliques manuais em "Iniciar/Batch agora".
+  const hasRunning = useMemo(
+    () => (migrations ?? []).some((m: any) => m.status === "running"),
+    [migrations],
+  );
+  const tickFn = useServerFn(tickMyMigrations);
+  useEffect(() => {
+    if (!hasRunning) return;
+    let stopped = false;
+    const run = async () => {
+      try { await tickFn(); } catch { /* silencioso */ }
+      if (!stopped) qc.invalidateQueries({ queryKey: ["group-migrations"] });
+    };
+    run();
+    const id = setInterval(run, 15_000);
+    return () => { stopped = true; clearInterval(id); };
+  }, [hasRunning, tickFn, qc]);
+
 
   const onlineConns = useMemo(
     () => connections.filter((c: any) => c.provider === "whatsapp" && c.status === "online"),
