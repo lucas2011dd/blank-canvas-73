@@ -12,6 +12,34 @@ const createSchema = z.object({
   recurrence: z.enum(["none", "daily", "weekly"]).default("none"),
 });
 
+function safeNumberAtLeast(value: unknown, fallback: number, floor: number) {
+  const n = Number(value ?? fallback);
+  return Math.max(floor, Number.isFinite(n) ? n : fallback);
+}
+
+function sendLeaseMs() {
+  return safeNumberAtLeast(process.env.WHATSAPP_SEND_LEASE_MS, 600_000, 120_000);
+}
+
+async function acquireConnectionSendLock(db: any, connectionId: string): Promise<string | null> {
+  const nowIso = new Date().toISOString();
+  const until = new Date(Date.now() + sendLeaseMs()).toISOString();
+  const { data } = await db.from("connections")
+    .update({ processing_until: until })
+    .eq("id", connectionId)
+    .or(`processing_until.is.null,processing_until.lt.${nowIso}`)
+    .select("id")
+    .maybeSingle();
+  return data ? until : null;
+}
+
+async function releaseConnectionSendLock(db: any, connectionId: string, lockUntil: string) {
+  await db.from("connections")
+    .update({ processing_until: null })
+    .eq("id", connectionId)
+    .eq("processing_until", lockUntil);
+}
+
 export const listScheduled = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
@@ -98,17 +126,20 @@ export const runScheduledNow = createServerFn({ method: "POST" })
       }).eq("id", conn.id).eq("user_id", context.userId);
       throw new Error("WhatsApp não está online; envio mantido na fila sem reiniciar a Evolution");
     }
-    const { data: claimed } = await context.supabase.from("scheduled_messages")
-      .update({ status: "sending" })
-      .eq("id", row.id)
-      .eq("user_id", context.userId)
-      .eq("status", "pending")
-      .select("*")
-      .maybeSingle();
-    if (!claimed) throw new Error("Agendamento já está sendo processado");
+    const lockUntil = await acquireConnectionSendLock(context.supabase, conn.id);
+    if (!lockUntil) throw new Error("Outra automação está usando esta conexão; tente novamente em instantes");
 
-    const target = claimed.target_kind === "group" ? claimed.target : claimed.target;
     try {
+      const { data: claimed } = await context.supabase.from("scheduled_messages")
+        .update({ status: "sending" })
+        .eq("id", row.id)
+        .eq("user_id", context.userId)
+        .eq("status", "pending")
+        .select("*")
+        .maybeSingle();
+      if (!claimed) throw new Error("Agendamento já está sendo processado");
+
+      const target = claimed.target_kind === "group" ? claimed.target : claimed.target;
       await evolution.sendText(instance, target, claimed.body);
       await context.supabase.from("scheduled_messages").update({
         status: "sent", sent_at: new Date().toISOString(), attempts: (claimed.attempts ?? 0) + 1,
@@ -162,5 +193,7 @@ export const runScheduledNow = createServerFn({ method: "POST" })
         status: "failed", last_error: e?.message ?? "erro", attempts: (claimed.attempts ?? 0) + 1,
       }).eq("id", claimed.id);
       throw e;
+    } finally {
+      await releaseConnectionSendLock(context.supabase, conn.id, lockUntil);
     }
   });

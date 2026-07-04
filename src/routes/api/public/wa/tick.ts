@@ -41,6 +41,25 @@ async function syncBroadcastCounters(db: any, broadcastId: string) {
   await db.from("broadcasts").update({ sent_count: sent ?? 0, failed_count: failed ?? 0 }).eq("id", broadcastId);
 }
 
+async function acquireConnectionSendLock(db: any, connectionId: string): Promise<string | null> {
+  const nowIso = new Date().toISOString();
+  const until = new Date(Date.now() + sendLeaseMs()).toISOString();
+  const { data } = await db.from("connections")
+    .update({ processing_until: until })
+    .eq("id", connectionId)
+    .or(`processing_until.is.null,processing_until.lt.${nowIso}`)
+    .select("id")
+    .maybeSingle();
+  return data ? until : null;
+}
+
+async function releaseConnectionSendLock(db: any, connectionId: string, lockUntil: string) {
+  await db.from("connections")
+    .update({ processing_until: null })
+    .eq("id", connectionId)
+    .eq("processing_until", lockUntil);
+}
+
 export const Route = createFileRoute("/api/public/wa/tick")({
   server: {
     handlers: {
@@ -314,24 +333,26 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               continue;
             }
 
-            const { data: claimed } = await supabaseAdmin.from("broadcast_targets")
-              .update({ status: "sending", next_attempt_at: new Date(Date.now() + sendLeaseMs()).toISOString() })
-              .eq("id", selected.id)
-              .eq("broadcast_id", bc.id)
-              .eq("status", "pending")
-              .lte("next_attempt_at", nowIsoPass)
-              .select("*")
-              .maybeSingle();
-            if (!claimed) continue;
-            const t = claimed;
-            sendConnectionsTouched.add(bc.connection_id);
-            didWork = true;
-            const body = (bc.template as string).replace(/\{(\w+)\}/g, (_, k) => {
-              if (k === "nome" || k === "name") return t.name ?? "";
-              if (k === "telefone") return t.phone ?? "";
-              return "";
-            });
+            const lockUntil = await acquireConnectionSendLock(supabaseAdmin, bc.connection_id);
+            if (!lockUntil) continue;
             try {
+              const { data: claimed } = await supabaseAdmin.from("broadcast_targets")
+                .update({ status: "sending", next_attempt_at: new Date(Date.now() + sendLeaseMs()).toISOString() })
+                .eq("id", selected.id)
+                .eq("broadcast_id", bc.id)
+                .eq("status", "pending")
+                .lte("next_attempt_at", nowIsoPass)
+                .select("*")
+                .maybeSingle();
+              if (!claimed) continue;
+              const t = claimed;
+              sendConnectionsTouched.add(bc.connection_id);
+              didWork = true;
+              const body = (bc.template as string).replace(/\{(\w+)\}/g, (_, k) => {
+                if (k === "nome" || k === "name") return t.name ?? "";
+                if (k === "telefone") return t.phone ?? "";
+                return "";
+              });
               await evolution.sendText(instance, t.phone, body);
               await supabaseAdmin.from("broadcast_targets").update({
                 status: "sent", sent_at: new Date().toISOString(),
@@ -382,6 +403,9 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             const nextAt = new Date(Date.now() + broadcastDelayMs(bc)).toISOString();
             await supabaseAdmin.from("broadcast_targets")
               .update({ next_attempt_at: nextAt }).eq("broadcast_id", bc.id).eq("status", "pending");
+            } finally {
+              await releaseConnectionSendLock(supabaseAdmin, bc.connection_id, lockUntil);
+            }
           }
 
           if (Date.now() >= deadline) break;
@@ -413,17 +437,19 @@ export const Route = createFileRoute("/api/public/wa/tick")({
               }).eq("id", row.connection_id);
               continue;
             }
-            const { data: claimed } = await supabaseAdmin.from("scheduled_messages")
-              .update({ status: "sending" })
-              .eq("id", row.id)
-              .eq("status", "pending")
-              .lte("scheduled_at", nowIsoPass)
-              .select("*")
-              .maybeSingle();
-            if (!claimed) continue;
-            sendConnectionsTouched.add(row.connection_id);
-            didWork = true;
+            const lockUntil = await acquireConnectionSendLock(supabaseAdmin, row.connection_id);
+            if (!lockUntil) continue;
             try {
+              const { data: claimed } = await supabaseAdmin.from("scheduled_messages")
+                .update({ status: "sending" })
+                .eq("id", row.id)
+                .eq("status", "pending")
+                .lte("scheduled_at", nowIsoPass)
+                .select("*")
+                .maybeSingle();
+              if (!claimed) continue;
+              sendConnectionsTouched.add(row.connection_id);
+              didWork = true;
               await evolution.sendText(instance, claimed.target, claimed.body);
               await supabaseAdmin.from("scheduled_messages").update({
                 status: "sent", sent_at: new Date().toISOString(), attempts: (claimed.attempts ?? 0) + 1,
@@ -478,6 +504,8 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 status: "failed", last_error: String(e?.message ?? "erro"), attempts: (claimed.attempts ?? 0) + 1,
               }).eq("id", claimed.id);
               summary.errors++;
+            } finally {
+              await releaseConnectionSendLock(supabaseAdmin, row.connection_id, lockUntil);
             }
           }
 

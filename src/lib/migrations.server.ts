@@ -215,7 +215,7 @@ async function updateMigrationSafe(supabase: any, migrationId: string, patch: Re
 // dobrando a taxa real e anulando o delay anti-restrição.
 const LOCK_TTL_MS = 55_000; // 55s > budget do tick (25s), evita lock eterno em crash
 
-async function acquireConnectionLock(supabase: any, connectionId: string): Promise<boolean> {
+async function acquireConnectionLock(supabase: any, connectionId: string): Promise<string | null> {
   const nowIso = new Date().toISOString();
   const until = new Date(Date.now() + LOCK_TTL_MS).toISOString();
   const { data } = await supabase.from("connections")
@@ -224,14 +224,15 @@ async function acquireConnectionLock(supabase: any, connectionId: string): Promi
     .or(`processing_until.is.null,processing_until.lt.${nowIso}`)
     .select("id")
     .maybeSingle();
-  return !!data;
+  return data ? until : null;
 }
 
-async function releaseConnectionLock(supabase: any, connectionId: string): Promise<void> {
+async function releaseConnectionLock(supabase: any, connectionId: string, lockUntil: string): Promise<void> {
   try {
     await supabase.from("connections")
       .update({ processing_until: null })
-      .eq("id", connectionId);
+      .eq("id", connectionId)
+      .eq("processing_until", lockUntil);
   } catch { /* best-effort */ }
 }
 
@@ -381,15 +382,15 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   }
   if (!mig.target_group_jid) throw new Error("Grupo destino ausente");
 
-  const gotLock = await acquireConnectionLock(supabase, mig.connection_id);
-  if (!gotLock) {
+  const lockUntil = await acquireConnectionLock(supabase, mig.connection_id);
+  if (!lockUntil) {
     return { migrationId, skipped: true, reason: "locked_by_concurrent_process" };
   }
 
   try {
     return await _processGroupMigrationBatchInner(supabase, mig);
   } finally {
-    await releaseConnectionLock(supabase, mig.connection_id);
+    await releaseConnectionLock(supabase, mig.connection_id, lockUntil);
   }
 }
 

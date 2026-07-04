@@ -33,6 +33,25 @@ async function syncBroadcastCounters(db: any, broadcastId: string) {
   await db.from("broadcasts").update({ sent_count: sent ?? 0, failed_count: failed ?? 0 }).eq("id", broadcastId);
 }
 
+async function acquireConnectionSendLock(db: any, connectionId: string): Promise<string | null> {
+  const nowIso = new Date().toISOString();
+  const until = new Date(Date.now() + sendLeaseMs()).toISOString();
+  const { data } = await db.from("connections")
+    .update({ processing_until: until })
+    .eq("id", connectionId)
+    .or(`processing_until.is.null,processing_until.lt.${nowIso}`)
+    .select("id")
+    .maybeSingle();
+  return data ? until : null;
+}
+
+async function releaseConnectionSendLock(db: any, connectionId: string, lockUntil: string) {
+  await db.from("connections")
+    .update({ processing_until: null })
+    .eq("id", connectionId)
+    .eq("processing_until", lockUntil);
+}
+
 export const listBroadcasts = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
@@ -208,6 +227,9 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
       .lte("next_attempt_at", nowIso).order("next_attempt_at").limit(1);
 
     const results: Array<{ id: string; ok: boolean; error?: string }> = [];
+    const lockUntil = due?.length ? await acquireConnectionSendLock(context.supabase, conn.id) : null;
+    if (due?.length && !lockUntil) throw new Error("Outra automação está usando esta conexão; tente novamente em instantes");
+    try {
     for (const selected of due ?? []) {
       const { data: claimed } = await context.supabase.from("broadcast_targets")
         .update({ status: "sending", next_attempt_at: new Date(Date.now() + sendLeaseMs()).toISOString() })
@@ -271,6 +293,9 @@ export const runBroadcastTick = createServerFn({ method: "POST" })
         .eq("broadcast_id", bc.id).eq("status", "pending");
       // pausa curta entre envios do MESMO tick (anti-flood do próprio worker)
       await new Promise((r) => setTimeout(r, 500));
+    }
+    } finally {
+      if (lockUntil) await releaseConnectionSendLock(context.supabase, conn.id, lockUntil);
     }
 
     const okCount = results.filter((r) => r.ok).length;
