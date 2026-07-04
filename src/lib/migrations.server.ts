@@ -197,7 +197,7 @@ async function _processGroupMigrationBatchInner(supabase: any, migrationId: stri
   // outro usuário.
   const { data: conn } = await supabase
     .from("connections")
-    .select("status,metadata,user_id")
+    .select("status,metadata,user_id,last_reconnect_attempt_at")
     .eq("id", mig.connection_id)
     .eq("user_id", mig.user_id)
     .maybeSingle();
@@ -205,14 +205,15 @@ async function _processGroupMigrationBatchInner(supabase: any, migrationId: stri
   const instance = conn.metadata?.evolution_instance ?? instanceNameFor(mig.connection_id);
 
   const tryReconnect = async () => {
-    // CORREÇÃO: Cooldown aumentado de 5min para 10min.
-    // Reconexões frequentes são interpretadas pelo WhatsApp como comportamento
-    // suspeito. O Baileys precisa de tempo para estabilizar após uma queda.
+    // CORREÇÃO (item 2): cooldown por CONEXÃO persistido no banco em
+    // connections.last_reconnect_attempt_at — antes era um Map em globalThis
+    // que não protegia entre processos/réplicas. Cooldown 10min por padrão.
     const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 10 * 60_000);
-    const cache: Map<string, number> = ((globalThis as any).__migrationReconnectAt ??= new Map());
-    const last = cache.get(instance) ?? 0;
-    if (Date.now() - last < cooldownMs) return false;
-    cache.set(instance, Date.now());
+    const last = conn.last_reconnect_attempt_at ? Date.parse(conn.last_reconnect_attempt_at) : 0;
+    if (last && Date.now() - last < cooldownMs) return false;
+    await supabase.from("connections")
+      .update({ last_reconnect_attempt_at: new Date().toISOString() })
+      .eq("id", mig.connection_id).eq("user_id", mig.user_id);
     // Reconecta preservando a sessão: restart/reload da instância, nunca /connect.
     const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 2_000 }).catch(() => null);
     if (recovered) {
