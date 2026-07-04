@@ -154,19 +154,31 @@ function urlCandidates(base: string, path: string) {
   const add = (url: string) => {
     if (!candidates.includes(url)) candidates.push(url);
   };
+  // SEGURANÇA (item 3): nunca rebaixar https→http. Se a URL original for
+  // HTTPS, todos os candidatos permanecem HTTPS — do contrário a apikey
+  // da Evolution seria enviada em texto puro pela rede, e o endpoint
+  // ficaria cacheado em EVOLUTION_WORKING_BASE como preferido para as
+  // próximas chamadas. Se todas as tentativas HTTPS falharem, propagamos
+  // o erro para o usuário em vez de tentar HTTP silenciosamente.
+  let primaryIsHttps = false;
+  try { primaryIsHttps = new URL(primary).protocol === "https:"; } catch { /* noop */ }
+
   const cachedBase = EVOLUTION_WORKING_BASE.get(base);
-  if (cachedBase) add(`${cachedBase}${path}`);
+  if (cachedBase) {
+    try {
+      const cachedProto = new URL(cachedBase).protocol;
+      if (!(primaryIsHttps && cachedProto !== "https:")) {
+        add(`${cachedBase}${path}`);
+      }
+    } catch { /* ignora cache inválido */ }
+  }
   add(primary);
   try {
     const url = new URL(primary);
     const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname);
     if (isIp) {
-      const plainIp = new URL(url.toString());
-      plainIp.protocol = "http:";
-      add(plainIp.toString());
-
+      // Alias sslip.io preserva SEMPRE o protocolo original — nunca força HTTP.
       const alias = new URL(url.toString());
-      alias.protocol = "http:";
       alias.hostname = `${url.hostname.replace(/\./g, "-")}.sslip.io`;
       add(alias.toString());
     }
