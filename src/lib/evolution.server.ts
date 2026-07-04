@@ -656,7 +656,14 @@ export function payloadIndicatesPairingLost(source: unknown): boolean {
     s?.disconnectReason,
     s?.instance?.disconnectReason,
   );
-  if (reason && (reason.includes("device_removed") || reason.includes("logged_out") || reason.includes("logout") || reason.includes("unpaired"))) return true;
+  const normalizedReason = String(reason ?? "").toLowerCase();
+  if (
+    normalizedReason.includes("device_removed") ||
+    normalizedReason.includes("logged_out") ||
+    normalizedReason.includes("logged out") ||
+    normalizedReason.includes("logout") ||
+    normalizedReason.includes("unpaired")
+  ) return true;
 
   return false;
 }
