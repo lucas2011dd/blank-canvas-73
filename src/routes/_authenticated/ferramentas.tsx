@@ -37,10 +37,12 @@ function Page() {
       let items: ImportRow[] = [];
       if (ext === "csv") {
         const text = await f.text();
+        const { default: Papa } = await import("papaparse");
         const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });
         items = parsed.data.map((r) => ({ name: r.name || r.Nome || "", phone: r.phone || r.Telefone, email: r.email || r.Email, company: r.company || r.Empresa, city: r.city || r.Cidade })).filter((i) => i.name);
       } else if (ext === "xlsx" || ext === "xls") {
         const buf = await f.arrayBuffer();
+        const XLSX = await import("xlsx");
         const wb = XLSX.read(buf); const ws = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json<Record<string, string>>(ws);
         items = rows.map((r) => ({ name: r.name || r.Nome || "", phone: r.phone || r.Telefone, email: r.email || r.Email, company: r.company || r.Empresa, city: r.city || r.Cidade })).filter((i) => i.name);
