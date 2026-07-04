@@ -99,6 +99,11 @@ function digitsOnly(v: unknown): string {
   return String(v ?? "").replace(/\D/g, "");
 }
 
+function safeNumberAtLeast(value: unknown, fallback: number, floor: number) {
+  const n = Number(value ?? fallback);
+  return Math.max(floor, Number.isFinite(n) ? n : fallback);
+}
+
 function safeToIso(ts: unknown): string {
   const now = new Date().toISOString();
   if (ts == null || ts === "") return now;
