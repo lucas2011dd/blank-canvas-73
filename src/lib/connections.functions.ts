@@ -202,12 +202,12 @@ export const pollWhatsappQr = createServerFn({ method: "POST" })
     await context.supabase.from("connections").update({ metadata: probeMeta })
       .eq("id", data.id).eq("user_id", context.userId);
 
-    // 1) Tenta extrair de instanceInfo (não gera novo QR na Evolution).
+    // Não chamar instanceInfo/fetchInstances aqui: em servidores com muitas
+    // instâncias esse endpoint traz a lista inteira. QR vem do webhook ou de
+    // /connect com cooldown abaixo.
     let qr: string | null = null;
-    const info = await evolution.instanceInfo(name).catch(() => null);
-    qr = await extractQrImage(info);
 
-    // 2) Se nada, dispara /connect com cooldown. Antes isso acontecia a cada
+    // Dispara /connect com cooldown. Antes isso acontecia a cada
     // 2s no polling do cliente e gerava flood de QR/logs na Evolution.
     const lastConnectAt = Date.parse(String(meta.qr_connect_requested_at ?? "")) || 0;
     const qrConnectCooldownMs = Number(process.env.QR_CONNECT_COOLDOWN_MS ?? 30_000);
@@ -784,11 +784,6 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
       .eq("id", data.id).eq("user_id", context.userId).maybeSingle();
     if (!connRow) throw new Error("Conexão não encontrada");
     const name = instanceNameFromConnection(connRow);
-
-    // (Re)registra o webhook — a instância pode ter sido criada antes de
-    // APP_PUBLIC_URL estar configurada.
-    const wh = buildWebhookUrl(name);
-    if (wh) await evolution.setWebhook(name, wh);
 
     // Sync leve por padrão: grupos são necessários para seleção/migração;
     // contatos e chats completos são dumps grandes e só rodam se ativados por env.
