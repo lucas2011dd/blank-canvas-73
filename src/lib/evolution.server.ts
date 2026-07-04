@@ -487,7 +487,56 @@ export const evolution = {
       { method: "POST", body: { action: "add", participants }, timeoutMs: 30_000 },
     );
   },
+
+  // Verifica quais números da lista têm WhatsApp ativo.
+  // Endpoint /chat/whatsappNumbers → devolve array com { jid, exists, number }.
+  async checkWhatsappNumbers(instanceName: string, numbers: string[]): Promise<Array<{ number: string; exists: boolean; jid?: string }>> {
+    if (!numbers?.length) return [];
+    const res = await call<any>(
+      `/chat/whatsappNumbers/${encodeURIComponent(instanceName)}`,
+      { method: "POST", body: { numbers } },
+    ).catch(() => []);
+    const list = Array.isArray(res) ? res : (res?.data ?? res?.numbers ?? []);
+    return list.map((row: any) => ({
+      number: String(row?.number ?? row?.phone ?? "").replace(/\D/g, ""),
+      exists: Boolean(row?.exists ?? row?.isRegistered ?? row?.registered),
+      jid: row?.jid ?? row?.remoteJid ?? undefined,
+    }));
+  },
 };
+
+/**
+ * Extrai um código de erro numérico (ex.: 515, 401, 428) do payload/erro da
+ * Evolution API. Usado para registrar em audit_logs qual foi a causa exata
+ * da queda — permite diferenciar 515 (Baileys stream:error / pre-keys) de
+ * 401 (device_removed) sem precisar ler string livre.
+ */
+export function extractEvolutionErrorCode(source: unknown): number | null {
+  const haystack = typeof source === "object" && source !== null
+    ? JSON.stringify(source, Object.getOwnPropertyNames(source))
+    : String(source ?? "");
+  // Códigos mais comuns do Baileys/WhatsApp stream
+  const patterns = [
+    /"code"\s*:\s*"?515"?/,
+    /stream:error[^"]*"?515/i,
+    /\b515\b/,
+    /"statusReason"\s*:\s*"?401"?/i,
+    /"code"\s*:\s*"?401"?/,
+    /\b401\b/,
+    /\b428\b/,
+    /\b408\b/,
+    /\b500\b/,
+    /\b503\b/,
+  ];
+  for (const re of patterns) {
+    const m = haystack.match(re);
+    if (m) {
+      const n = Number(m[0].replace(/\D/g, ""));
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return null;
+}
 
 export type EvolutionConnectionStatus = "online" | "offline" | "connecting";
 
