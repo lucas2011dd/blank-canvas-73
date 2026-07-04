@@ -24,6 +24,7 @@ create table if not exists public.group_migrations (
   started_at timestamptz,
   finished_at timestamptz,
   last_error text,
+  metadata jsonb default '{}'::jsonb,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );

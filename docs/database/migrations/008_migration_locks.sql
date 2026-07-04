@@ -16,6 +16,12 @@ alter table public.connections
 alter table public.connections
   add column if not exists last_reconnect_attempt_at timestamptz;
 
+-- Estado persistente do worker de migração (last_batch_at, backoffs,
+-- contadores de falha). O código usa esta coluna ao finalizar o primeiro
+-- batch; sem ela, o update falha e a fila fica travada/conectando.
+alter table public.group_migrations
+  add column if not exists metadata jsonb default '{}'::jsonb;
+
 -- Índice para varrer travas expiradas (opcional, mas ajuda diagnóstico).
 create index if not exists idx_connections_processing_until
   on public.connections(processing_until)
