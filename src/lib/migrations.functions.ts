@@ -275,7 +275,7 @@ export const tickMyMigrations = createServerFn({ method: "POST" })
       .eq("status", "running")
       .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
       .order("next_attempt_at", { ascending: true })
-      .limit(10);
+      .limit(1);
     const results: any[] = [];
     const touchedConnections = new Set<string>();
     for (const m of due ?? []) {

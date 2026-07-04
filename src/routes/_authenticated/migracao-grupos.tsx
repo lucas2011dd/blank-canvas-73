@@ -22,6 +22,7 @@ import { BrGeoFilter } from "@/components/br-geo-filter";
 
 const connQ = queryOptions({ queryKey: ["connections"], queryFn: () => listConnections() });
 const migQ = queryOptions({ queryKey: ["group-migrations"], queryFn: () => listGroupMigrations() });
+const AUTO_TICK_LEASE_KEY = "connecthub:group-migration-auto-tick";
 
 export const Route = createFileRoute("/_authenticated/migracao-grupos")({
   head: () => ({ meta: [{ title: "Migração de Grupos — ConnectHub" }] }),
@@ -57,11 +58,17 @@ function Page() {
   );
   const tickFn = useServerFn(tickMyMigrations);
   const autoTickInFlight = useRef(false);
+  const autoTickTabId = useRef(typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Math.random()));
   useEffect(() => {
     if (!hasRunning) return;
     let stopped = false;
     const run = async () => {
       if (autoTickInFlight.current) return;
+      const now = Date.now();
+      const leaseRaw = window.localStorage.getItem(AUTO_TICK_LEASE_KEY);
+      const lease = leaseRaw ? JSON.parse(leaseRaw) as { owner?: string; expiresAt?: number } : null;
+      if (lease?.owner && lease.owner !== autoTickTabId.current && Number(lease.expiresAt ?? 0) > now) return;
+      window.localStorage.setItem(AUTO_TICK_LEASE_KEY, JSON.stringify({ owner: autoTickTabId.current, expiresAt: now + 12_000 }));
       autoTickInFlight.current = true;
       try {
         await tickFn();
@@ -71,7 +78,13 @@ function Page() {
     };
     run();
     const id = setInterval(run, 15_000);
-    return () => { stopped = true; clearInterval(id); };
+    return () => {
+      stopped = true;
+      clearInterval(id);
+      const leaseRaw = window.localStorage.getItem(AUTO_TICK_LEASE_KEY);
+      const lease = leaseRaw ? JSON.parse(leaseRaw) as { owner?: string } : null;
+      if (lease?.owner === autoTickTabId.current) window.localStorage.removeItem(AUTO_TICK_LEASE_KEY);
+    };
   }, [hasRunning, tickFn, qc]);
 
 
@@ -323,7 +336,7 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
         <BrGeoFilter states={filterStates} setStates={setFilterStates} ddds={filterDdds} setDdds={setFilterDdds} />
 
         <p className="text-xs text-muted-foreground">
-          <b>100% automático:</b> a migração roda 24/7 pelo tick (~1/min) — não precisa clicar em "Batch agora".
+          <b>Automático:</b> com o painel aberto, os batches avançam sozinhos; com cron externo, rodam 24/7.
           Adiciona com ritmo seguro: 1 contato por chamada real, delay {minDelay}–{maxDelay}s entre cada adição.
           <b> Recomendado: mínimo 25s, máximo 60s</b> para evitar que o WhatsApp detecte como spam e desconecte a sessão.
         </p>
