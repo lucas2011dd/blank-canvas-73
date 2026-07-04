@@ -8,6 +8,12 @@ function instanceNameFor(id: string) {
 
 const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
 
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
+
 function safeNumberAtLeast(value: unknown, fallback: number, floor: number) {
   const n = Number(value ?? fallback);
   return Math.max(floor, Number.isFinite(n) ? n : fallback);
@@ -62,11 +68,14 @@ export const previewGroupParticipants = createServerFn({ method: "POST" })
     const instance = (conn.metadata as any)?.evolution_instance ?? instanceNameFor(conn.id);
     const { evolution } = await import("@/lib/evolution.server");
     const parts = await evolution.groupParticipants(instance, data.sourceGroupJid);
-    const rows = parts.map((p: any) => {
-      const jid = participantJid(p);
-      return { jid, phone: participantPhone(p), admin: isAdminParticipant(p) };
-    }).filter((r) => r.phone.length >= 8);
-    return { total: rows.length, participants: rows };
+    let total = 0;
+    let adminCount = 0;
+    for (const p of parts) {
+      if (participantPhone(p).length < 8) continue;
+      total++;
+      if (isAdminParticipant(p)) adminCount++;
+    }
+    return { total, adminCount };
   });
 
 export const listGroupMigrations = createServerFn({ method: "GET" })
@@ -172,18 +181,26 @@ export const startGroupMigration = createServerFn({ method: "POST" })
 
     const { phoneMatchesBrFilter } = await import("@/lib/br-ddd");
     const geoFilter = { states: data.filterStates, ddds: data.filterDdds };
-    let allPhones = Array.from(new Set(
-      filtered.map((p: any) => participantPhone(p))
-        .filter((p) => p.length >= 8 && !exclude.has(p) && phoneMatchesBrFilter(p, geoFilter))
-    ));
+    const maxTargets = Math.min(
+      data.maxParticipants ?? Number(process.env.GROUP_MIGRATION_MAX_TARGETS ?? 1024),
+      1024,
+    );
+    const uniquePhones = new Set<string>();
+    for (const participant of filtered) {
+      const phone = participantPhone(participant);
+      if (phone.length < 8 || exclude.has(phone) || !phoneMatchesBrFilter(phone, geoFilter)) continue;
+      uniquePhones.add(phone);
+      if (!data.shuffleOrder && uniquePhones.size >= maxTargets) break;
+    }
+    let allPhones = Array.from(uniquePhones);
     if (data.shuffleOrder) {
       for (let i = allPhones.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [allPhones[i], allPhones[j]] = [allPhones[j], allPhones[i]];
       }
     }
-    if (data.maxParticipants && allPhones.length > data.maxParticipants) {
-      allPhones = allPhones.slice(0, data.maxParticipants);
+    if (allPhones.length > maxTargets) {
+      allPhones = allPhones.slice(0, maxTargets);
     }
     if (allPhones.length === 0) throw new Error("Nenhum participante válido após filtros (DDD/estado/exclusões)");
 
@@ -251,7 +268,9 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       added_at: initialAdded.includes(phone) ? new Date().toISOString() : null,
     }));
     if (targetsRows.length) {
-      await context.supabase.from("group_migration_targets").insert(targetsRows);
+      for (const chunk of chunkArray(targetsRows, 100)) {
+        await context.supabase.from("group_migration_targets").insert(chunk);
+      }
     }
 
     await context.supabase.from("audit_logs").insert({

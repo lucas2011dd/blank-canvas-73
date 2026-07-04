@@ -212,7 +212,7 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
           {previewQ.data && (
             <p className="text-xs text-muted-foreground mt-1">
               ✅ {previewQ.data.total} participantes encontrados
-              {skipAdmins ? ` · ${previewQ.data.participants.filter((p: any) => p.admin).length} admin(s) serão ignorados` : ""}
+              {skipAdmins ? ` · ${previewQ.data.adminCount ?? 0} admin(s) serão ignorados` : ""}
             </p>
           )}
           {previewQ.error && <p className="text-xs text-destructive mt-1">{(previewQ.error as Error).message}</p>}
