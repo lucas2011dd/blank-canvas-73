@@ -521,6 +521,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
             .select("id,connection_id").eq("status", "running").lte("next_attempt_at", nowIsoPass).limit(5);
           for (const m of migs ?? []) {
             if (Date.now() >= deadline) break;
+            if (sendConnectionsTouched.has(m.connection_id)) continue;
             if (migrationConnectionsTouched.has(m.connection_id)) continue;
             migrationConnectionsTouched.add(m.connection_id);
             try {
