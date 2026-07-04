@@ -388,18 +388,38 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     }
   }
 
-  // CORREÇÃO: Pausa de estabilização antes de chamar addGroupParticipants.
-  // O Baileys precisa de um intervalo mínimo após reconexão ou após o
-  // último add para não gerar stream:error/device_removed. Mesmo que o
-  // banco indique "online", o WebSocket pode ainda estar se estabilizando.
-  // Usa metadata.last_batch_at para persistir sem precisar de nova coluna.
+  // CORREÇÃO: estabilização sem bloquear o Worker.
+  // Antes o código fazia setTimeout aqui segurando a trava/conexão aberta.
+  // Em Lovable/serverless ou VPS com cron isso acumulava ticks e aumentava a
+  // pressão na Evolution logo após o primeiro batch. Agora apenas reagenda o
+  // próximo attempt e libera a instância.
   const lastAddedAt = (mig.metadata as any)?.last_batch_at
     ? new Date((mig.metadata as any).last_batch_at).getTime()
     : 0;
   const minIntervalMs = Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 15_000);
   const elapsed = Date.now() - lastAddedAt;
   if (elapsed < minIntervalMs) {
-    await new Promise((r) => setTimeout(r, minIntervalMs - elapsed));
+    const waitMs = Math.max(1_000, minIntervalMs - elapsed);
+    const nextAttemptAt = new Date(Date.now() + waitMs).toISOString();
+    await supabase.from("group_migrations").update({
+      next_attempt_at: nextAttemptAt,
+      last_error: null,
+    }).eq("id", mig.id);
+    try {
+      await supabase.from("audit_logs").insert({
+        user_id: mig.user_id,
+        action: "migration_rate_limited",
+        entity: "group_migration",
+        entity_id: mig.id,
+        metadata: {
+          connection_id: mig.connection_id,
+          wait_ms: waitMs,
+          min_interval_ms: minIntervalMs,
+          last_batch_at: (mig.metadata as any)?.last_batch_at ?? null,
+        },
+      });
+    } catch { /* audit best-effort */ }
+    return { migrationId, skipped: true, reason: "rate_limited", nextAttemptAt };
   }
 
   const requeued = await requeueTransientFailures(supabase, mig.id);
