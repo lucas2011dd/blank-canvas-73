@@ -99,8 +99,11 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     // O WhatsApp detecta padrões de adição em grupo muito rápidos como spam
     // e desconecta a sessão com device_removed. Intervalos mais longos
     // simulam comportamento humano e evitam a desconexão.
-    minDelaySeconds: z.number().int().min(1).max(3600).default(25),
-    maxDelaySeconds: z.number().int().min(1).max(3600).default(60),
+    // Defaults CONSERVADORES anti-ban: 60s..180s por adição.
+    // O WhatsApp/Baileys marca a sessão como suspeita quando adds em grupo
+    // acontecem em < 60s. Menor que isso e o próximo add derruba a sessão.
+    minDelaySeconds: z.number().int().min(1).max(3600).default(60),
+    maxDelaySeconds: z.number().int().min(1).max(3600).default(180),
     excludePhones: z.array(z.string()).default([]),
     skipAdmins: z.boolean().default(true),
     skipSelf: z.boolean().default(true),
