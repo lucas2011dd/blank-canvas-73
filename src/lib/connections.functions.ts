@@ -803,8 +803,8 @@ export const syncWhatsappConnection = createServerFn({ method: "POST" })
     const allowHeavySync = String(process.env.WHATSAPP_ALLOW_HEAVY_SYNC ?? "").toLowerCase() === "true";
     const syncContacts = allowHeavySync && String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() === "true";
     const syncChats = allowHeavySync && String(process.env.WHATSAPP_SYNC_CHATS ?? "").toLowerCase() === "true";
-    const contactsLimit = Number(process.env.WHATSAPP_SYNC_CONTACTS_LIMIT ?? 500);
-    const chatsLimit = Number(process.env.WHATSAPP_SYNC_CHATS_LIMIT ?? 200);
+    const contactsLimit = Math.min(safeNumberAtLeast(process.env.WHATSAPP_SYNC_CONTACTS_LIMIT, 500, 1), 5_000);
+    const chatsLimit = Math.min(safeNumberAtLeast(process.env.WHATSAPP_SYNC_CHATS_LIMIT, 200, 1), 1_000);
 
     let contactsRes: PromiseSettledResult<any[]> = { status: "fulfilled", value: [] };
     let chatsRes: PromiseSettledResult<any[]> = { status: "fulfilled", value: [] };
