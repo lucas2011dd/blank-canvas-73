@@ -6,6 +6,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 const BULK_FAST_ACK_EVENTS = new Set([
   "contacts.upsert", "CONTACTS_UPSERT",
   "contacts.update", "CONTACTS_UPDATE",
+  "chats.upsert",    "CHATS_UPSERT",
   "chats.update",    "CHATS_UPDATE",
   "groups.upsert",   "GROUPS_UPSERT",
   "group-participants.update", "GROUP_PARTICIPANTS_UPDATE",
@@ -149,6 +150,18 @@ async function handleEvent(
 
   if (event === "contacts.upsert" || event === "CONTACTS_UPSERT") {
     const list: any[] = Array.isArray(data) ? data : (data.contacts ?? []);
+    if (String(process.env.WHATSAPP_SYNC_CONTACTS ?? "").toLowerCase() !== "true") {
+      await admin.from("connections").update({
+        last_sync_at: new Date().toISOString(),
+        metadata: {
+          ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+          evolution_instance: instanceName,
+          contacts_upsert_deferred: list.length,
+          contacts_upsert_deferred_at: new Date().toISOString(),
+        },
+      }).eq("id", conn.id);
+      return;
+    }
     if (list.length > 200) {
       // Dump histórico enorme: só marca; sync completo é sob demanda.
       await admin.from("connections").update({
@@ -191,7 +204,6 @@ async function handleEvent(
   }
 
   if (
-    event === "chats.upsert"  || event === "CHATS_UPSERT" ||
     event === "groups.upsert" || event === "GROUPS_UPSERT"
   ) {
     const list: any[] = Array.isArray(data) ? data : (data.chats ?? data.groups ?? data.data ?? []);

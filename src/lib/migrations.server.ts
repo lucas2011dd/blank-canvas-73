@@ -626,8 +626,27 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     // fica em phoneNumber; por isso persistimos e enviamos apenas o número.
     const phonesToSend = phones.map(sendPhoneFor);
     const res = await evolution.addGroupParticipants(instance, mig.target_group_jid, phonesToSend);
-    const list = Array.isArray(res) ? res : (res?.updateParticipants ?? res?.participants ?? res?.data ?? []);
-    if (!Array.isArray(list) || list.length === 0) {
+    const listCandidates = [
+      res,
+      res?.updateParticipants,
+      res?.participants,
+      res?.data,
+      res?.data?.updateParticipants,
+      res?.data?.participants,
+    ];
+    const list = listCandidates.find(Array.isArray) ?? [];
+    const responseText = (() => {
+      try { return JSON.stringify(res).toLowerCase(); } catch { return String(res ?? "").toLowerCase(); }
+    })();
+    const wholeResponseSuccess =
+      phonesToSend.length === 1 && (
+        res?.success === true ||
+        res?.status === true ||
+        String(res?.status ?? res?.result ?? res?.message ?? "").toLowerCase() === "success" ||
+        responseText.includes("participante adicionado") ||
+        responseText.includes("participant added")
+      );
+    if ((!Array.isArray(list) || list.length === 0) && !wholeResponseSuccess) {
       throw new Error("timeout: resposta vazia da Evolution ao adicionar participante; retentando sem marcar como adicionado");
     }
     const byPhone: Record<string, any> = {};
@@ -643,7 +662,9 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     // sucesso/falha vem 100% do retorno do próprio addGroupParticipants().
     for (const t of batch) {
       const expectedPhone = sendPhoneFor(t.phone);
-      const resolvedIt = byPhone[expectedPhone] ?? byPhone[t.phone] ?? byPhone[phoneKey(expectedPhone)] ?? byPhone[phoneKey(t.phone)];
+      const resolvedIt = wholeResponseSuccess
+        ? { status: "success", success: true }
+        : byPhone[expectedPhone] ?? byPhone[t.phone] ?? byPhone[phoneKey(expectedPhone)] ?? byPhone[phoneKey(t.phone)];
       const rawStatus = String(resolvedIt?.status ?? resolvedIt?.result ?? "").toLowerCase();
       const apiSuccess = rawStatus === "success" || rawStatus === "200" || resolvedIt?.success === true;
       const apiSkipped = rawStatus === "skipped" || rawStatus === "already_in_group";
