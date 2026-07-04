@@ -21,10 +21,14 @@ async function handleEvent(
   event: string,
   data: any,
 ): Promise<void> {
-  const { data: conn } = await admin.from("connections")
+  const { data: conn, error: connErr } = await admin.from("connections")
     .select("id,user_id,status,metadata")
     .eq("metadata->>evolution_instance", instanceName)
     .maybeSingle();
+  if (connErr) {
+    console.error("[webhook-processor] lookup ambíguo da instância", instanceName, connErr.message);
+    throw new Error(`Instância duplicada ou lookup inválido: ${instanceName}`);
+  }
   if (!conn) return;
 
   if (event === "connection.update" || event === "CONNECTION_UPDATE") {
@@ -176,29 +180,42 @@ async function handleEvent(
       return;
     }
     const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
+    const groupRows: any[] = [];
+    const contactRows: any[] = [];
     for (const c of list) {
       const jid = String(c.remoteJid ?? c.id ?? c.jid ?? "");
       if (!jid) continue;
       if (jid.endsWith("@g.us")) {
-        await admin.from("whatsapp_groups").upsert({
+        groupRows.push({
           user_id: conn.user_id, connection_id: conn.id, jid,
           subject: String(c.pushName ?? c.name ?? c.notify ?? "Grupo"),
           picture_url: c.profilePicUrl ?? null,
           metadata: { instance_id: c.instanceId ?? null },
-        }, { onConflict: "connection_id,jid" });
+        });
         continue;
       }
       const phone = digits(jid.split("@")[0]);
       if (!phone) continue;
-      const { data: exists } = await admin.from("contacts").select("id")
-        .eq("user_id", conn.user_id).eq("phone", phone).maybeSingle();
-      if (!exists) {
-        await admin.from("contacts").insert({
-          user_id: conn.user_id,
-          name: String(c.pushName ?? c.name ?? c.notify ?? phone),
-          phone, external_source: "whatsapp", external_id: jid,
-        });
-      }
+      contactRows.push({
+        user_id: conn.user_id,
+        name: String(c.pushName ?? c.name ?? c.notify ?? phone),
+        phone,
+        external_source: "whatsapp",
+        external_id: jid,
+      });
+    }
+    if (groupRows.length) {
+      await admin.from("whatsapp_groups").upsert(groupRows, { onConflict: "connection_id,jid" });
+    }
+    if (contactRows.length) {
+      const phones = Array.from(new Set(contactRows.map((row) => row.phone)));
+      const { data: existing } = await admin.from("contacts")
+        .select("phone")
+        .eq("user_id", conn.user_id)
+        .in("phone", phones);
+      const existingPhones = new Set((existing ?? []).map((row: any) => row.phone));
+      const toInsert = contactRows.filter((row) => !existingPhones.has(row.phone));
+      if (toInsert.length) await admin.from("contacts").insert(toInsert);
     }
     return;
   }

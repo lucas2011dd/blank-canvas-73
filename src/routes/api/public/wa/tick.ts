@@ -5,16 +5,7 @@
 // Protegido por TICK_SECRET. O segredo é aceito APENAS via header
 // para não vazar em logs de proxy/CDN/referrer.
 import { createFileRoute } from "@tanstack/react-router";
-
-// Rate limit simples em memória (por IP): 60 req/min.
-const RATE: Map<string, { count: number; reset: number }> = (globalThis as any).__tickRate ??= new Map();
-function rateLimited(ip: string): boolean {
-  const now = Date.now();
-  const bucket = RATE.get(ip);
-  if (!bucket || bucket.reset < now) { RATE.set(ip, { count: 1, reset: now + 60_000 }); return false; }
-  bucket.count++;
-  return bucket.count > 60;
-}
+import { timingSafeEqual } from "crypto";
 
 function safeNumberAtLeast(value: unknown, fallback: number, floor: number) {
   const n = Number(value ?? fallback);
@@ -64,12 +55,11 @@ export const Route = createFileRoute("/api/public/wa/tick")({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const ip = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-        if (rateLimited(ip)) return new Response("rate_limited", { status: 429 });
-
         const secret = process.env.TICK_SECRET ?? "";
         const got = request.headers.get("x-tick-secret") ?? "";
-        if (!secret || got.length !== secret.length || got !== secret) {
+        const secretBuf = Buffer.from(secret, "utf8");
+        const gotBuf = Buffer.from(got.padEnd(secret.length, "\0"), "utf8");
+        if (!secret || got.length !== secret.length || !timingSafeEqual(secretBuf, gotBuf)) {
           return new Response("unauthorized", { status: 401 });
         }
 
@@ -259,7 +249,7 @@ export const Route = createFileRoute("/api/public/wa/tick")({
         //   TICK_BUDGET_MS       (default 25000) — tempo máximo por tick
         //   TICK_RECOVERY_MS     (default 10000) — retry após reconexão
         //   TICK_MIGRATION_RETRY_MS (default 20000) — retry migração após erro
-        const budgetMs = Math.max(55_000, Number(process.env.TICK_BUDGET_MS ?? 55_000));
+        const budgetMs = safeNumberAtLeast(process.env.TICK_BUDGET_MS, 25_000, 5_000);
         const recoveryMs = Number(process.env.TICK_RECOVERY_MS ?? 15_000);
         // CORREÇÃO: migRetryMs aumentado de 20s para 35s.
         // Após um erro de migração, o Baileys precisa de mais tempo para
@@ -403,9 +393,19 @@ export const Route = createFileRoute("/api/public/wa/tick")({
                 summary.errors++;
               }
 
-              const nextAt = new Date(Date.now() + broadcastDelayMs(bc)).toISOString();
-              await supabaseAdmin.from("broadcast_targets")
-                .update({ next_attempt_at: nextAt }).eq("broadcast_id", bc.id).eq("status", "pending");
+              const { data: nextPending } = await supabaseAdmin.from("broadcast_targets")
+                .select("id")
+                .eq("broadcast_id", bc.id)
+                .eq("status", "pending")
+                .lte("next_attempt_at", nowIsoPass)
+                .order("next_attempt_at")
+                .limit(1)
+                .maybeSingle();
+              if (nextPending?.id) {
+                await supabaseAdmin.from("broadcast_targets")
+                  .update({ next_attempt_at: new Date(Date.now() + broadcastDelayMs(bc)).toISOString() })
+                  .eq("id", nextPending.id);
+              }
             } finally {
               await releaseConnectionSendLock(supabaseAdmin, bc.connection_id, lockUntil);
             }

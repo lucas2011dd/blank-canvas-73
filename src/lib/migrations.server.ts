@@ -359,7 +359,7 @@ async function handleSessionDrop(
   const autoPauseAt = Number(process.env.MIGRATION_AUTO_PAUSE_AFTER_DROPS ?? 2);
   const shouldAutoPause = failCount >= autoPauseAt;
   await supabase.from("group_migrations").update({
-    status: shouldAutoPause ? "paused" : mig.status,
+    status: shouldAutoPause ? "paused" : "running",
     next_attempt_at: shouldAutoPause ? null : new Date(Date.now() + backoffMs).toISOString(),
     last_error: shouldAutoPause
       ? `Sessão oscilou ${failCount}x seguidas — migração PAUSADA automaticamente para proteger a conexão. Confirme se o WhatsApp está estável e clique em Retomar.`
@@ -388,7 +388,15 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
   }
 
   try {
-    return await _processGroupMigrationBatchInner(supabase, mig);
+    let freshQuery = supabase.from("group_migrations").select("*").eq("id", migrationId);
+    if (userIdScope) freshQuery = freshQuery.eq("user_id", userIdScope);
+    const { data: freshMig } = await freshQuery.maybeSingle();
+    if (!freshMig) throw new Error("Migração não encontrada");
+    if (freshMig.status !== "running" && freshMig.status !== "pending") {
+      return { migrationId, skipped: true, reason: `status_changed_after_lock=${freshMig.status}` };
+    }
+    if (!freshMig.target_group_jid) throw new Error("Grupo destino ausente");
+    return await _processGroupMigrationBatchInner(supabase, freshMig);
   } finally {
     await releaseConnectionLock(supabase, mig.connection_id, lockUntil);
   }
@@ -646,7 +654,18 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         responseText.includes("participante adicionado") ||
         responseText.includes("participant added")
       );
-    if ((!Array.isArray(list) || list.length === 0) && !wholeResponseSuccess) {
+    const emptySingleResponse = (!Array.isArray(list) || list.length === 0) && phonesToSend.length === 1;
+    if (emptySingleResponse && !wholeResponseSuccess) {
+      const only = batch[0];
+      const expectedPhone = sendPhoneFor(only.phone);
+      await supabase.from("group_migration_targets").update({
+        phone: expectedPhone,
+        jid: `${expectedPhone}@s.whatsapp.net`,
+        status: "skipped",
+        error: "sem retorno da Evolution — provável already_in_group",
+      }).eq("id", only.id);
+      skipped++;
+    } else if ((!Array.isArray(list) || list.length === 0) && !wholeResponseSuccess) {
       throw new Error("timeout: resposta vazia da Evolution ao adicionar participante; retentando sem marcar como adicionado");
     }
     const byPhone: Record<string, any> = {};
@@ -660,7 +679,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
 
     // Não fazer nenhuma leitura de participantes após o add. A decisão de
     // sucesso/falha vem 100% do retorno do próprio addGroupParticipants().
-    for (const t of batch) {
+    for (const t of emptySingleResponse && !wholeResponseSuccess ? [] : batch) {
       const expectedPhone = sendPhoneFor(t.phone);
       const resolvedIt = wholeResponseSuccess
         ? { status: "success", success: true }
