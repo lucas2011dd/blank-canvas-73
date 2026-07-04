@@ -506,15 +506,16 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     }
   } catch (e: any) {
     if (isPairingLostEvolutionError(e) || isLoggedOutEvolutionError(e)) {
-      await markConnectionReauthRequired(supabase, {
-        connectionId: mig.connection_id,
-        userId: mig.user_id,
-        instanceName: instance,
-        reason: String(e?.message ?? "device_removed"),
-      });
-      await requeueTransientFailures(supabase, mig.id);
-      return { migrationId, added: 0, failed: 0, skipped: 0, done: false, reauthRequired: true, message: REAUTH_REQUIRED_MESSAGE };
+      // Não pausa de cara: usa handleSessionDrop (restart + backoff).
+      // Só marca reauth_required após MIGRATION_MAX_SESSION_DROPS quedas
+      // consecutivas — evita QR desnecessário quando a sessão volta sozinha.
+      const outcome = await handleSessionDrop(supabase, mig, conn, instance, e);
+      if (outcome.decision === "reauth_required") {
+        return { migrationId, added: 0, failed: 0, skipped: 0, done: false, reauthRequired: true, message: REAUTH_REQUIRED_MESSAGE, sessionDropCount: outcome.failCount };
+      }
+      return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true, sessionDropCount: outcome.failCount };
     }
+
     if (isTransientEvolutionError(e)) {
       // CORREÇÃO (item 6): backoff EXPONENCIAL para falhas transientes.
       // Antes: delay fixo (30s) independente de quantas falhas seguidas.
