@@ -263,8 +263,14 @@ async function _processGroupMigrationBatchInner(supabase: any, migrationId: stri
   const effectiveFailedCount = Math.max(0, (mig.failed_count ?? 0) - requeued);
 
   const effectiveBatchSize = automationBatchSize(mig.batch_size);
+  // Idempotência: seleciona SOMENTE status="pending" e explicitamente exclui
+  // "added"/"skipped"/"failed" — evita reprocessar quem já entrou no grupo
+  // (belt-and-suspenders: já filtrado por status, o .not garante que uma
+  // corrida de status não faça double-add).
   const { data: batch } = await supabase.from("group_migration_targets")
-    .select("*").eq("migration_id", mig.id).eq("status", "pending").limit(effectiveBatchSize);
+    .select("*").eq("migration_id", mig.id).eq("status", "pending")
+    .not("status", "in", "(added,skipped)")
+    .limit(effectiveBatchSize);
 
   if (!batch || batch.length === 0) {
     await supabase.from("group_migrations").update({
@@ -272,6 +278,34 @@ async function _processGroupMigrationBatchInner(supabase: any, migrationId: stri
     }).eq("id", mig.id);
     return { migrationId, completed: true };
   }
+
+  // Pré-check: descarta números sem WhatsApp ativo antes do add. Evita
+  // "tentativas desperdiçadas" e falhas que a Evolution/Baileys interpretam
+  // como comportamento suspeito. Best-effort — se o endpoint falhar, segue.
+  try {
+    const nums = batch.map((t: any) => t.phone).filter(Boolean);
+    const check = await evolution.checkWhatsappNumbers(instance, nums);
+    if (check.length) {
+      const invalid = new Set(
+        check.filter((r) => !r.exists).map((r) => r.number),
+      );
+      if (invalid.size) {
+        const invalidRows = batch.filter((t: any) => invalid.has(String(t.phone).replace(/\D/g, "")));
+        for (const t of invalidRows) {
+          await supabase.from("group_migration_targets").update({
+            status: "skipped", error: "número não tem WhatsApp",
+          }).eq("id", t.id);
+        }
+        for (const t of invalidRows) {
+          const idx = batch.indexOf(t);
+          if (idx >= 0) batch.splice(idx, 1);
+        }
+      }
+    }
+    if (batch.length === 0) {
+      return { migrationId, added: 0, failed: 0, skipped: 0, done: false };
+    }
+  } catch { /* pré-check é best-effort */ }
 
   const phones = batch.map((t: any) => t.phone);
 

@@ -1,15 +1,11 @@
-// Webhook público da Evolution API — ASSÍNCRONO.
-// Formato: byEvents=false → único endpoint por instância.
-// URL: /api/public/wa/webhook/:instance
+// Webhook público da Evolution API — ASSÍNCRONO com FAST-PATH.
 //
-// Aqui NÃO fazemos processamento pesado. Só:
-//   1) autentica o header `apikey` (fail-closed)
-//   2) grava o evento cru em `webhook_logs`
-//   3) responde 200 imediatamente
-//
-// O processamento acontece no /api/public/wa/tick, que drena a fila com
-// retry/backoff exponencial. Isso impede a Evolution de bloquear a sessão
-// esperando 30s pelo Supabase (causa raiz de `device_removed`).
+// - CONNECTION_UPDATE é processado inline: assim detectamos a queda no ato
+//   (em vez de esperar o próximo tick), registramos o código de erro exato
+//   em `audit_logs` e disparamos as automações de segurança.
+// - Demais eventos vão para a fila `webhook_logs` e são drenados no /tick.
+// - Handler responde 200 sempre, mesmo em falha interna — não pode segurar
+//   a Evolution 30s (causa raiz de device_removed).
 import { createFileRoute } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
@@ -31,24 +27,75 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
           const raw = await request.text();
           payload = raw ? JSON.parse(raw) : null;
         } catch { /* ignore */ }
-        if (!payload) return new Response("ok"); // ACK, nada a enfileirar
+        if (!payload) return new Response("ok");
 
         const event: string = String(payload.event ?? "unknown");
         const data = payload.data ?? {};
         const instanceName = params.instance;
 
-        // Grava e responde. Se o insert falhar, ainda respondemos 200 para
-        // não travar a Evolution — o webhook é best-effort e a reconciliação
-        // completa acontece no tick via /instance/fetchInstances.
         try {
           const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+          // -------- FAST-PATH: CONNECTION_UPDATE processado inline --------
+          if (event === "connection.update" || event === "CONNECTION_UPDATE") {
+            const { extractEvolutionConnectionState, evolutionStateToStatus, extractEvolutionErrorCode } = await import("@/lib/evolution.server");
+            const state = extractEvolutionConnectionState(data) ?? data.state ?? data.status ?? "";
+            const status = evolutionStateToStatus(state);
+            const errorCode = extractEvolutionErrorCode({ state, data });
+
+            const { data: conn } = await supabaseAdmin.from("connections")
+              .select("id,user_id,status,metadata")
+              .eq("metadata->>evolution_instance", instanceName)
+              .maybeSingle();
+
+            if (conn) {
+              // Auditoria da queda com código exato (515, 401, 428, ...).
+              if (status !== "online") {
+                try {
+                  await supabaseAdmin.from("audit_logs").insert({
+                    user_id: conn.user_id,
+                    action: "whatsapp_connection_drop",
+                    entity: "connection",
+                    entity_id: conn.id,
+                    metadata: {
+                      instance: instanceName,
+                      event, state, status,
+                      error_code: errorCode,
+                      status_reason: data.statusReason ?? data.reason ?? null,
+                      detected_via: "webhook_fast_path",
+                    },
+                  });
+                } catch { /* audit é best-effort */ }
+              }
+
+              const reason = String(data.statusReason ?? data.reason ?? errorCode ?? "").toLowerCase();
+              const deviceRemoved = /device[_ ]?removed|logged?[_ ]?out|401/i.test(reason);
+              await supabaseAdmin.from("connections").update({
+                status: status === "offline" && conn.status === "online" ? "connecting" : status,
+                last_sync_at: new Date().toISOString(),
+                metadata: {
+                  ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+                  evolution_instance: instanceName,
+                  evolution_state: state,
+                  last_evolution_error_code: errorCode,
+                  status_reason: data.statusReason ?? data.reason ?? null,
+                  device_removed_at: deviceRemoved ? new Date().toISOString() : null,
+                  connection_update_at: new Date().toISOString(),
+                },
+                ...(status === "online" ? { qr_code: null, last_seen_online_at: new Date().toISOString() } : {}),
+              }).eq("id", conn.id);
+            }
+          }
+
+          // Sempre enfileira também — mantém histórico e o drainer roda a
+          // reconciliação completa (session snapshot etc.) fora do caminho crítico.
           await supabaseAdmin.from("webhook_logs").insert({
             instance_name: instanceName,
             event,
             payload: { event, data },
           });
         } catch (e) {
-          console.error("[wa webhook] enqueue failed", e);
+          console.error("[wa webhook] processing failed", e);
         }
 
         return new Response("ok");
