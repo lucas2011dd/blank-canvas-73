@@ -126,7 +126,7 @@ async function requeueTransientFailures(supabase: any, migrationId: string) {
     .select("id,error")
     .eq("migration_id", migrationId)
     .eq("status", "failed")
-    .or("error.ilike.%Connection Closed%,error.ilike.%Connection Close%,error.ilike.%timeout%,error.ilike.%socket%,error.ilike.%Error updating participants%,error.eq.");
+    .or("error.ilike.%Connection Closed%,error.ilike.%Connection Close%,error.ilike.%timeout%,error.ilike.%socket%,error.ilike.%stream:error%,error.ilike.%not connected%,error.eq.");
 
   if (!failedRows?.length) return 0;
 
@@ -245,10 +245,8 @@ async function handleSessionDrop(
   // Restart silencioso (preserva sessão — nunca logout).
   await evolution.restart(instance).catch(() => undefined);
 
-  const nextConnectionStatus = conn?.status === "online" ? "online" : "connecting";
-
   await supabase.from("connections").update({
-    status: nextConnectionStatus,
+    status: "connecting",
     last_sync_at: new Date().toISOString(),
     metadata: {
       ...meta,
@@ -322,11 +320,14 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     // que não protegia entre processos/réplicas. Cooldown curto por padrão:
     // 10min deixava a conexão presa em "Conectando" após uma tentativa falha.
     const cooldownMs = Number(process.env.MIGRATION_RECONNECT_COOLDOWN_MS ?? 90_000);
-    const last = conn.last_reconnect_attempt_at ? Date.parse(conn.last_reconnect_attempt_at) : 0;
-    if (last && Date.now() - last < cooldownMs) return false;
-    await supabase.from("connections")
+    const cutoffIso = new Date(Date.now() - cooldownMs).toISOString();
+    const { data: reconnectClaim } = await supabase.from("connections")
       .update({ last_reconnect_attempt_at: new Date().toISOString() })
-      .eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      .eq("id", mig.connection_id).eq("user_id", mig.user_id)
+      .or(`last_reconnect_attempt_at.is.null,last_reconnect_attempt_at.lt.${cutoffIso}`)
+      .select("id,status,metadata")
+      .maybeSingle();
+    if (!reconnectClaim) return false;
     // Reconecta preservando a sessão: restart/reload da instância, nunca /connect.
     const recovered = await reconnectEvolutionSession(instance, { attempts: 2, delayMs: 2_000 }).catch(() => null);
     if (recovered) {
@@ -335,7 +336,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         ...(recovered.status === "online" ? { qr_code: null } : {}),
         last_sync_at: new Date().toISOString(),
         metadata: {
-          ...(conn.metadata ?? {}),
+          ...(reconnectClaim.metadata ?? conn.metadata ?? {}),
           evolution_instance: instance,
           evolution_state: recovered.state ?? recovered.status,
           auto_reconnect_at: new Date().toISOString(),
@@ -568,7 +569,12 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       // Não pausa de cara: usa handleSessionDrop (restart + backoff).
       // Só marca reauth_required após MIGRATION_MAX_SESSION_DROPS quedas
       // consecutivas — evita QR desnecessário quando a sessão volta sozinha.
-      const outcome = await handleSessionDrop(supabase, mig, conn, instance, e);
+      const { data: freshConn } = await supabase.from("connections")
+        .select("status,metadata,user_id,last_reconnect_attempt_at")
+        .eq("id", mig.connection_id)
+        .eq("user_id", mig.user_id)
+        .maybeSingle();
+      const outcome = await handleSessionDrop(supabase, mig, freshConn ?? conn, instance, e);
       if (outcome.decision === "reauth_required") {
         return { migrationId, added: 0, failed: 0, skipped: 0, done: false, reauthRequired: true, message: REAUTH_REQUIRED_MESSAGE, sessionDropCount: outcome.failCount };
       }
@@ -652,7 +658,12 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   // CONSECUTIVAS somam para o limite MIGRATION_MAX_SESSION_DROPS.
   if (hadProgress) {
     try {
-      const connMeta = (conn?.metadata as Record<string, unknown> | null) ?? {};
+      const { data: freshConn } = await supabase.from("connections")
+        .select("metadata")
+        .eq("id", mig.connection_id)
+        .eq("user_id", mig.user_id)
+        .maybeSingle();
+      const connMeta = ((freshConn ?? conn)?.metadata as Record<string, unknown> | null) ?? {};
       if (Number((connMeta as any).session_drop_count ?? 0) > 0) {
         const cleaned = { ...connMeta };
         delete (cleaned as any).session_drop_count;
