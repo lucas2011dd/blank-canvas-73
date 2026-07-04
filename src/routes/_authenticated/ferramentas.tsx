@@ -3,8 +3,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useRef, useState } from "react";
 import { FileUp, Users, RefreshCw, FileDown } from "lucide-react";
-import Papa from "papaparse";
-import * as XLSX from "xlsx";
+// papaparse & xlsx are lazy-loaded on demand (see handleFile/exportAll)
+// to keep them out of the initial route chunk (~500KB combined).
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
