@@ -1,12 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import type {} from "@tanstack/react-start";
 
-const BASE_URL = process.env.PUBLIC_BASE_URL ?? "";
-
 export const Route = createFileRoute("/sitemap.xml")({
   server: {
     handlers: {
       GET: async () => {
+        // Cloudflare Workers injeta env por request — módulo é undefined.
+        const BASE_URL = process.env.PUBLIC_BASE_URL ?? "";
         const entries = [
           { path: "/", changefreq: "weekly", priority: "1.0" },
           { path: "/auth", changefreq: "monthly", priority: "0.3" },
