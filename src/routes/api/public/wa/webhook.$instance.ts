@@ -70,8 +70,27 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
 
               const reason = String(data.statusReason ?? data.reason ?? errorCode ?? "").toLowerCase();
               const deviceRemoved = /device[_ ]?removed|logged?[_ ]?out|401/i.test(reason);
+
+              // Durante migração ATIVA nesta conexão, não flipa `status` para
+              // "connecting" em oscilações transitórias — o Baileys emite
+              // CONNECTION_UPDATE várias vezes logo após addGroupParticipants
+              // (close → connecting → open) e o flip fazia o próximo tick
+              // reentrar no ramo offline e disparar handleSessionDrop sem
+              // necessidade. Só flipa quando é claramente device_removed.
+              const { data: activeMig } = await supabaseAdmin.from("group_migrations")
+                .select("id")
+                .eq("connection_id", conn.id)
+                .eq("status", "running")
+                .limit(1)
+                .maybeSingle();
+              const skipStatusFlip = !!activeMig && status !== "online" && !deviceRemoved;
+
+              const nextStatus = skipStatusFlip
+                ? conn.status
+                : (status === "offline" && conn.status === "online" ? "connecting" : status);
+
               await supabaseAdmin.from("connections").update({
-                status: status === "offline" && conn.status === "online" ? "connecting" : status,
+                status: nextStatus,
                 last_sync_at: new Date().toISOString(),
                 metadata: {
                   ...((conn.metadata as Record<string, unknown> | null) ?? {}),
@@ -81,10 +100,12 @@ export const Route = createFileRoute("/api/public/wa/webhook/$instance")({
                   status_reason: data.statusReason ?? data.reason ?? null,
                   device_removed_at: deviceRemoved ? new Date().toISOString() : null,
                   connection_update_at: new Date().toISOString(),
+                  ...(skipStatusFlip ? { migration_status_flip_skipped_at: new Date().toISOString() } : {}),
                 },
                 ...(status === "online" ? { qr_code: null, last_seen_online_at: new Date().toISOString() } : {}),
               }).eq("id", conn.id);
             }
+
           }
 
           // Sempre enfileira também — mantém histórico e o drainer roda a

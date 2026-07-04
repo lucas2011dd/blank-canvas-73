@@ -156,6 +156,92 @@ async function releaseConnectionLock(supabase: any, connectionId: string): Promi
   } catch { /* best-effort */ }
 }
 
+/**
+ * Trata queda de sessão durante a migração de forma GRADUAL:
+ * antes de pausar tudo e exigir novo QR, tenta restart silencioso até
+ * `MIGRATION_MAX_SESSION_DROPS` (default 3) vezes consecutivas, com backoff
+ * exponencial. Só marca `reauth_required` após esgotar as tentativas.
+ *
+ * Motivo: Baileys costuma reportar `close`/`statusReason:401` transitório
+ * logo após `addGroupParticipants` e volta sozinho em segundos. O
+ * comportamento antigo (pausar já na primeira detecção) obrigava o usuário
+ * a rescanear QR toda vez que a sessão oscilava — mesmo sem logout real.
+ *
+ * Contador vive em `connections.metadata.session_drop_count` e é resetado
+ * a cada batch bem-sucedido.
+ */
+async function handleSessionDrop(
+  supabase: any,
+  mig: any,
+  conn: any,
+  instance: string,
+  reason: unknown,
+): Promise<{ decision: "reauth_required" | "graceful_retry"; failCount: number }> {
+  const meta = (conn?.metadata as Record<string, any> | null) ?? {};
+  const prev = Number(meta.session_drop_count ?? 0);
+  const failCount = prev + 1;
+  const maxFails = Number(process.env.MIGRATION_MAX_SESSION_DROPS ?? 3);
+  const reasonStr = typeof reason === "string" ? reason : (reason as any)?.message ?? JSON.stringify(reason);
+
+  try {
+    await supabase.from("audit_logs").insert({
+      user_id: mig.user_id,
+      action: "migration_session_drop",
+      entity: "connection",
+      entity_id: mig.connection_id,
+      metadata: {
+        instance,
+        reason: String(reasonStr ?? ""),
+        fail_count: failCount,
+        max_fails: maxFails,
+        migration_id: mig.id,
+      },
+    });
+  } catch { /* audit best-effort */ }
+
+  if (failCount >= maxFails) {
+    await markConnectionReauthRequired(supabase, {
+      connectionId: mig.connection_id,
+      userId: mig.user_id,
+      instanceName: instance,
+      reason: String(reasonStr ?? "device_removed"),
+    });
+    await requeueTransientFailures(supabase, mig.id);
+    return { decision: "reauth_required", failCount };
+  }
+
+  // Restart silencioso (preserva sessão — nunca logout).
+  await evolution.restart(instance).catch(() => undefined);
+
+  await supabase.from("connections").update({
+    status: "connecting",
+    last_sync_at: new Date().toISOString(),
+    metadata: {
+      ...meta,
+      evolution_instance: instance,
+      session_drop_count: failCount,
+      last_session_drop_at: new Date().toISOString(),
+      last_session_drop_reason: String(reasonStr ?? ""),
+      evolution_state: "graceful_restart_pending",
+    },
+  }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
+
+  // Backoff exponencial: 30s → 60s → 120s (teto 3min).
+  const baseMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_MS ?? 30_000);
+  const capMs = Number(process.env.MIGRATION_SESSION_DROP_BACKOFF_CAP_MS ?? 180_000);
+  const backoffMs = Math.min(baseMs * (2 ** (failCount - 1)), capMs);
+
+  await requeueTransientFailures(supabase, mig.id);
+  await supabase.from("group_migrations").update({
+    next_attempt_at: new Date(Date.now() + backoffMs).toISOString(),
+    last_error: `Sessão oscilou (queda ${failCount}/${maxFails}). Reiniciando silenciosamente — nova tentativa em ${Math.round(backoffMs / 1000)}s.`,
+  }).eq("id", mig.id);
+
+  return { decision: "graceful_retry", failCount };
+}
+
+
+
 export async function processGroupMigrationBatch(supabase: any, migrationId: string, userIdScope?: string) {
   // Precisamos do connection_id antes de pegar a trava — carrega a migração primeiro.
   let q = supabase.from("group_migrations").select("*").eq("id", migrationId);
@@ -247,15 +333,10 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
         const state = await evolution.state(instance).catch(() => null);
         const sessionRemoved = isLoggedOutEvolutionError(state) || pairingLostSignal(conn, state);
           if (sessionRemoved) {
-            await markConnectionReauthRequired(supabase, {
-              connectionId: mig.connection_id,
-              userId: mig.user_id,
-              instanceName: instance,
-              reason: "device_removed",
-            });
-            await requeueTransientFailures(supabase, mig.id);
-            return { migrationId, skipped: true, reason: "reauth_required" };
+            const outcome = await handleSessionDrop(supabase, mig, conn, instance, state ?? "device_removed");
+            return { migrationId, skipped: true, reason: outcome.decision, sessionDropCount: outcome.failCount };
           }
+
           const recovered = await tryReconnect();
           if (recovered) {
           await supabase.from("connections").update({ status: "online", qr_code: null }).eq("id", mig.connection_id).eq("user_id", mig.user_id);
@@ -305,7 +386,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   const lastAddedAt = (mig.metadata as any)?.last_batch_at
     ? new Date((mig.metadata as any).last_batch_at).getTime()
     : 0;
-  const minIntervalMs = Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 5_000);
+  const minIntervalMs = Number(process.env.MIGRATION_MIN_INTERVAL_MS ?? 15_000);
   const elapsed = Date.now() - lastAddedAt;
   if (elapsed < minIntervalMs) {
     await new Promise((r) => setTimeout(r, minIntervalMs - elapsed));
@@ -331,12 +412,16 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     return { migrationId, completed: true };
   }
 
-  // Pré-check: descarta números sem WhatsApp ativo antes do add. Evita
-  // "tentativas desperdiçadas" e falhas que a Evolution/Baileys interpretam
-  // como comportamento suspeito. Best-effort — se o endpoint falhar, segue.
-  try {
+  // Pré-check: descarta números sem WhatsApp ativo antes do add. DESLIGADO
+  // por padrão — cada chamada à Evolution imediatamente antes do
+  // addGroupParticipants aumenta o risco de stream:error/device_removed no
+  // Baileys. Ative com MIGRATION_PRECHECK_NUMBERS=true apenas se sua base
+  // tiver muitos números inválidos e você aceitar o custo. Sem pré-check, os
+  // inválidos caem naturalmente como "failed" no retorno do próprio add.
+  if (String(process.env.MIGRATION_PRECHECK_NUMBERS ?? "").toLowerCase() === "true") try {
     const nums = batch.map((t: any) => t.phone).filter(Boolean);
     const check = await evolution.checkWhatsappNumbers(instance, nums);
+
     if (check.length) {
       const invalid = new Set(
         check.filter((r) => !r.exists).map((r) => r.number),
@@ -421,15 +506,16 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     }
   } catch (e: any) {
     if (isPairingLostEvolutionError(e) || isLoggedOutEvolutionError(e)) {
-      await markConnectionReauthRequired(supabase, {
-        connectionId: mig.connection_id,
-        userId: mig.user_id,
-        instanceName: instance,
-        reason: String(e?.message ?? "device_removed"),
-      });
-      await requeueTransientFailures(supabase, mig.id);
-      return { migrationId, added: 0, failed: 0, skipped: 0, done: false, reauthRequired: true, message: REAUTH_REQUIRED_MESSAGE };
+      // Não pausa de cara: usa handleSessionDrop (restart + backoff).
+      // Só marca reauth_required após MIGRATION_MAX_SESSION_DROPS quedas
+      // consecutivas — evita QR desnecessário quando a sessão volta sozinha.
+      const outcome = await handleSessionDrop(supabase, mig, conn, instance, e);
+      if (outcome.decision === "reauth_required") {
+        return { migrationId, added: 0, failed: 0, skipped: 0, done: false, reauthRequired: true, message: REAUTH_REQUIRED_MESSAGE, sessionDropCount: outcome.failCount };
+      }
+      return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true, sessionDropCount: outcome.failCount };
     }
+
     if (isTransientEvolutionError(e)) {
       // CORREÇÃO (item 6): backoff EXPONENCIAL para falhas transientes.
       // Antes: delay fixo (30s) independente de quantas falhas seguidas.
@@ -501,6 +587,25 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     last_error: Object.keys(errors).length ? Object.values(errors)[0] : null,
     metadata: nextMeta,
   }).eq("id", mig.id);
+
+  // Reset do contador de quedas de sessão quando o batch de fato progrediu.
+  // Isso garante que uma oscilação isolada não conte para sempre — só quedas
+  // CONSECUTIVAS somam para o limite MIGRATION_MAX_SESSION_DROPS.
+  if (hadProgress) {
+    try {
+      const connMeta = (conn?.metadata as Record<string, unknown> | null) ?? {};
+      if (Number((connMeta as any).session_drop_count ?? 0) > 0) {
+        const cleaned = { ...connMeta };
+        delete (cleaned as any).session_drop_count;
+        delete (cleaned as any).last_session_drop_at;
+        delete (cleaned as any).last_session_drop_reason;
+        await supabase.from("connections")
+          .update({ metadata: cleaned })
+          .eq("id", mig.connection_id).eq("user_id", mig.user_id);
+      }
+    } catch { /* best-effort */ }
+  }
+
 
   return { migrationId, added, failed, skipped, done };
 }
