@@ -431,19 +431,41 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, reauthRequired: true, message: REAUTH_REQUIRED_MESSAGE };
     }
     if (isTransientEvolutionError(e)) {
-      // CORREÇÃO: Não tentar reconectar imediatamente após erro transiente
-      // durante o add. O Baileys precisa de tempo para se recuperar.
-      // Apenas agenda retry com delay maior e mantém o lote pendente.
-      const retryDelayMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_MS ?? 30_000);
+      // CORREÇÃO (item 6): backoff EXPONENCIAL para falhas transientes.
+      // Antes: delay fixo (30s) independente de quantas falhas seguidas.
+      // Agora: 30s → 60s → 120s → 240s (teto 5min), com contador em
+      // metadata.consecutive_transient_failures. É resetado para 0 no
+      // update final quando o batch tem sucesso (bloco abaixo).
+      const baseMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_MS ?? 30_000);
+      const capMs = Number(process.env.MIGRATION_TRANSIENT_RETRY_CAP_MS ?? 300_000);
+      const consecutive = Number((mig.metadata as any)?.consecutive_transient_failures ?? 0);
+      const retryDelayMs = Math.min(baseMs * (2 ** consecutive), capMs);
+      const nextConsecutive = consecutive + 1;
       await supabase.from("group_migrations").update({
         failed_count: effectiveFailedCount,
         next_attempt_at: new Date(Date.now() + retryDelayMs).toISOString(),
-        last_error: `Conexão instável durante adição — retry automático em ${Math.round(retryDelayMs / 1000)}s, lote mantido pendente`,
+        last_error: `Conexão instável durante adição — retry automático em ${Math.round(retryDelayMs / 1000)}s (falha ${nextConsecutive}, backoff exponencial)`,
         metadata: {
           ...((mig.metadata as Record<string, unknown>) ?? {}),
           last_batch_at: new Date().toISOString(),
+          consecutive_transient_failures: nextConsecutive,
+          last_transient_failure_at: new Date().toISOString(),
         },
       }).eq("id", mig.id);
+      // Log de auditoria para acompanhar o padrão de falhas transientes.
+      try {
+        await supabase.from("audit_logs").insert({
+          user_id: mig.user_id,
+          action: "migration_transient_backoff",
+          entity: "group_migration",
+          entity_id: mig.id,
+          metadata: {
+            consecutive_failures: nextConsecutive,
+            retry_delay_ms: retryDelayMs,
+            error: String(e?.message ?? e),
+          },
+        });
+      } catch { /* audit best-effort */ }
       return { migrationId, added: 0, failed: 0, skipped: 0, done: false, retriedLater: true };
     }
     for (const t of batch) {
@@ -459,6 +481,16 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   const totalDone = (mig.added_count ?? 0) + added + effectiveFailedCount + failed + (mig.skipped_count ?? 0) + skipped;
   const done = totalDone >= (mig.total ?? 0);
 
+  // Se o batch conseguiu adicionar/skippar alguém, resetamos o contador de
+  // falhas transientes consecutivas (item 6).
+  const hadProgress = added > 0 || skipped > 0;
+  const prevMeta = (mig.metadata as Record<string, unknown>) ?? {};
+  const nextMeta: Record<string, unknown> = {
+    ...prevMeta,
+    last_batch_at: new Date().toISOString(),
+  };
+  if (hadProgress) nextMeta.consecutive_transient_failures = 0;
+
   await supabase.from("group_migrations").update({
     status: done ? "completed" : "running",
     added_count: (mig.added_count ?? 0) + added,
@@ -467,12 +499,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
     next_attempt_at: done ? null : nextAt,
     finished_at: done ? new Date().toISOString() : null,
     last_error: Object.keys(errors).length ? Object.values(errors)[0] : null,
-    // CORREÇÃO: Registra timestamp do último batch em metadata para controle
-    // de intervalo mínimo entre adds (sem precisar de nova coluna no banco).
-    metadata: {
-      ...((mig.metadata as Record<string, unknown>) ?? {}),
-      last_batch_at: new Date().toISOString(),
-    },
+    metadata: nextMeta,
   }).eq("id", mig.id);
 
   return { migrationId, added, failed, skipped, done };
