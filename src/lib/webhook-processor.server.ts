@@ -46,34 +46,49 @@ async function handleEvent(
       const numericAuthDrop = /\b401\b/.test(reason);
       deviceRemoved = explicitDeviceRemoved || (!hasActive && numericAuthDrop);
       if (hasActive && !deviceRemoved) {
+        const metaUpdate: Record<string, unknown> = {
+          ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+          evolution_instance: instanceName,
+          evolution_state: "migration_transient_connection_update_ignored",
+          last_connection_update_state: state,
+          last_connection_update_reason: data.statusReason ?? data.reason ?? null,
+          auto_reconnect_at: new Date().toISOString(),
+        };
+        delete metaUpdate.pairing_lost_at;
+        delete metaUpdate.pairing_lost_reason;
         await admin.from("connections").update({
           status: conn.status,
           qr_code: null,
           last_sync_at: new Date().toISOString(),
-          metadata: {
-            ...((conn.metadata as Record<string, unknown> | null) ?? {}),
-            evolution_instance: instanceName,
-            evolution_state: "migration_transient_connection_update_ignored",
-            last_connection_update_state: state,
-            last_connection_update_reason: data.statusReason ?? data.reason ?? null,
-            auto_reconnect_at: new Date().toISOString(),
-          },
+          metadata: metaUpdate,
         }).eq("id", conn.id);
         return;
       }
     }
 
+    const metaUpdate: Record<string, unknown> = {
+      ...((conn.metadata as Record<string, unknown> | null) ?? {}),
+      evolution_instance: instanceName,
+      evolution_state: state,
+      status_reason: data.statusReason ?? data.reason ?? null,
+      disconnected_at: status === "offline" ? new Date().toISOString() : null,
+      ...(deviceRemoved ? { device_removed_at: new Date().toISOString() } : {}),
+    };
+    if (status === "online") {
+      delete metaUpdate.pairing_lost_at;
+      delete metaUpdate.pairing_lost_reason;
+      delete metaUpdate.device_removed_at;
+      delete metaUpdate.session_drop_count;
+      delete metaUpdate.last_session_drop_at;
+      delete metaUpdate.last_session_drop_reason;
+      delete metaUpdate.status_reason;
+      delete metaUpdate.disconnected_at;
+    }
+
     await admin.from("connections").update({
       status,
       last_sync_at: new Date().toISOString(),
-      metadata: {
-        ...((conn.metadata as Record<string, unknown> | null) ?? {}),
-        evolution_instance: instanceName,
-        evolution_state: state,
-        status_reason: data.statusReason ?? data.reason ?? null,
-        device_removed_at: deviceRemoved ? new Date().toISOString() : null,
-        disconnected_at: status === "offline" ? new Date().toISOString() : null,
-      },
+      metadata: metaUpdate,
       ...(status === "online" ? { qr_code: null, last_seen_online_at: new Date().toISOString() } : {}),
       ...(deviceRemoved ? { qr_code: null } : {}),
     }).eq("id", conn.id);
