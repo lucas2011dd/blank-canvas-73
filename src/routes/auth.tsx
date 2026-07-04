@@ -73,7 +73,7 @@ function AuthPage() {
   }
 
   return (
-    <div className="grid min-h-screen lg:grid-cols-2">
+    <div className="grid min-h-dvh lg:grid-cols-2">
       <div className="hidden lg:flex flex-col justify-between bg-gradient-hero p-12 text-primary-foreground">
         <Link to="/" className="flex items-center gap-2">
           <Sparkles className="h-6 w-6" />
