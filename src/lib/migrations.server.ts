@@ -22,10 +22,6 @@ function automationBatchSize(value: unknown): number {
 }
 
 function automationDelaySeconds(minValue: unknown, maxValue: unknown): number {
-  // Floors elevados para VPS pequena (2 vCPU/4GB): cada catch chama
-  // /group/updateParticipant, que pode pressionar CPU/RAM do Baileys. O erro
-  // 409 observado é compatível com novo catch chegando enquanto a Evolution
-  // ainda estabilizava o update anterior. Mantemos intervalo humano e longo.
   const minFloor = Math.max(180, Number(process.env.MIGRATION_MIN_DELAY_FLOOR_SECONDS ?? 180));
   const maxFloor = Math.max(300, Number(process.env.MIGRATION_MAX_DELAY_FLOOR_SECONDS ?? 300));
   const min = Math.max(
@@ -38,6 +34,114 @@ function automationDelaySeconds(minValue: unknown, maxValue: unknown): number {
     min,
   );
   return jitter(Math.floor(min), Math.floor(max));
+}
+
+// ============================================================================
+// ANTI-BAN HUMAN-LIKE SCHEDULER
+// ----------------------------------------------------------------------------
+// WhatsApp detecta bot por: (1) cadência uniforme, (2) volume alto em janelas
+// curtas, (3) atividade 24/7 sem sono, (4) ausência de pausas longas,
+// (5) ramp-up instantâneo em conta nova. Este scheduler substitui o delay
+// uniforme por distribuição realista + quiet hours + coffee breaks + daily cap.
+// ============================================================================
+
+const SP_TZ_OFFSET_HOURS = -3;
+
+function saoPauloHour(now = new Date()): number {
+  return (now.getUTCHours() + 24 + SP_TZ_OFFSET_HOURS) % 24;
+}
+
+function nextActiveWindowMs(from = new Date()): number {
+  const quietStart = Math.max(0, Math.min(23, Number(process.env.MIGRATION_QUIET_START_HOUR ?? 22)));
+  const quietEnd = Math.max(0, Math.min(23, Number(process.env.MIGRATION_QUIET_END_HOUR ?? 8)));
+  const hour = saoPauloHour(from);
+  const inQuiet =
+    quietStart < quietEnd
+      ? hour >= quietStart && hour < quietEnd
+      : hour >= quietStart || hour < quietEnd;
+  if (!inQuiet) return 0;
+  const currentHourSP = saoPauloHour(from);
+  const hoursUntilEnd = currentHourSP < quietEnd ? quietEnd - currentHourSP : 24 - currentHourSP + quietEnd;
+  const target = new Date(from);
+  target.setUTCHours(target.getUTCHours() + hoursUntilEnd, jitter(0, 59), jitter(0, 59), 0);
+  return Math.max(0, target.getTime() - from.getTime()) + jitter(5 * 60_000, 35 * 60_000);
+}
+
+function logNormalJitter(baseSec: number): number {
+  const u1 = Math.max(1e-9, Math.random());
+  const u2 = Math.random();
+  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  const mult = Math.exp(z * 0.28);
+  return Math.max(60, Math.round(baseSec * mult));
+}
+
+function computeHumanDelayMs(mig: any, addedInThisBatch: number): {
+  delayMs: number; reason: string; metaPatch: Record<string, unknown>;
+} {
+  const meta = (mig.metadata as Record<string, any>) ?? {};
+  const totalAddedSoFar = (mig.added_count ?? 0) + addedInThisBatch;
+  let delaySec = logNormalJitter(automationDelaySeconds(mig.min_delay_seconds, mig.max_delay_seconds));
+  let reason = "human_jitter";
+  const metaPatch: Record<string, unknown> = {};
+
+  // Warm-up: 5 primeiros adds mais lentos (conta "fria" adicionando de cara é red flag).
+  if (totalAddedSoFar < 5 && addedInThisBatch > 0) {
+    const warmupMult = [2.4, 2.0, 1.7, 1.4, 1.2][totalAddedSoFar] ?? 1;
+    delaySec = Math.round(delaySec * warmupMult);
+    reason = `warmup_${totalAddedSoFar + 1}_of_5`;
+  }
+
+  // Coffee break periódico a cada 6-10 adds.
+  const streak = Number(meta.adds_since_break ?? 0) + addedInThisBatch;
+  const breakThreshold = jitter(
+    Number(process.env.MIGRATION_BREAK_EVERY_MIN ?? 6),
+    Number(process.env.MIGRATION_BREAK_EVERY_MAX ?? 10),
+  );
+  if (addedInThisBatch > 0 && streak >= breakThreshold) {
+    delaySec += jitter(
+      Number(process.env.MIGRATION_COFFEE_MIN_SEC ?? 20 * 60),
+      Number(process.env.MIGRATION_COFFEE_MAX_SEC ?? 45 * 60),
+    );
+    metaPatch.adds_since_break = 0;
+    metaPatch.last_coffee_break_at = new Date().toISOString();
+    reason = "coffee_break";
+  } else if (addedInThisBatch > 0) {
+    metaPatch.adds_since_break = streak;
+  }
+
+  // 5% chance de distração humana (90-240s extras).
+  if (Math.random() < 0.05) {
+    delaySec += jitter(90, 240);
+    reason += "+distraction";
+  }
+
+  let delayMs = delaySec * 1000;
+
+  // Quiet hours (22h-08h SP): posterga para o próximo período ativo.
+  const quietPush = nextActiveWindowMs(new Date(Date.now() + delayMs));
+  if (quietPush > 0) {
+    delayMs += quietPush;
+    reason = "quiet_hours_deferred";
+  }
+
+  // Daily cap por migração (default 40 adds/dia).
+  const cap = Math.max(1, Number(process.env.MIGRATION_DAILY_CAP ?? 40));
+  const today = new Date().toISOString().slice(0, 10);
+  const dailyState = (meta.daily_counter as { date?: string; count?: number } | undefined) ?? {};
+  const sameDay = dailyState.date === today;
+  const dailyCount = (sameDay ? Number(dailyState.count ?? 0) : 0) + addedInThisBatch;
+  metaPatch.daily_counter = { date: today, count: dailyCount };
+  if (dailyCount >= cap) {
+    const now = new Date();
+    const quietEnd = Math.max(0, Math.min(23, Number(process.env.MIGRATION_QUIET_END_HOUR ?? 8)));
+    const tomorrow = new Date(now);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    tomorrow.setUTCHours(quietEnd - SP_TZ_OFFSET_HOURS, jitter(30, 89), jitter(0, 59), 0);
+    delayMs = Math.max(delayMs, tomorrow.getTime() - now.getTime() + jitter(0, 30 * 60_000));
+    reason = "daily_cap_reached";
+  }
+
+  return { delayMs, reason, metaPatch };
 }
 
 function waitMsUntil(iso?: string | null): number | null {
