@@ -70,61 +70,83 @@ function Page() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
+      <div className="flex items-center justify-between gap-4 flex-wrap animate-fade-in">
         <div>
           <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-            <UsersRound className="h-7 w-7" /> Migração de Grupos
+            <span className="relative inline-flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-hero shadow-glow">
+              <UsersRound className="h-5 w-5 text-primary-foreground" />
+              <span className="absolute inset-0 rounded-xl ring-1 ring-white/20 animate-pulse" />
+            </span>
+            Migração de Grupos
           </h1>
           <p className="text-muted-foreground">Copie participantes de um grupo para outro com técnicas anti-restrição.</p>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button disabled={onlineConns.length === 0}>Nova migração</Button>
+            <Button disabled={onlineConns.length === 0} className="hover-lift">
+              <Sparkles className="mr-2 h-4 w-4" /> Nova migração
+            </Button>
           </DialogTrigger>
           <NewMigrationDialog connections={onlineConns} onDone={() => { setOpen(false); qc.invalidateQueries({ queryKey: ["group-migrations"] }); }} />
         </Dialog>
       </div>
 
       {onlineConns.length === 0 && (
-        <Card className="p-4 text-sm text-muted-foreground">
+        <Card className="p-4 text-sm text-muted-foreground animate-fade-in">
           Nenhuma conexão WhatsApp online. Conecte um WhatsApp em <b>Conexões</b> primeiro.
         </Card>
       )}
 
-      <div className="grid gap-3">
+      <div className="grid gap-3 stagger-in">
         {migrations.length === 0 ? (
           <Card className="p-8 text-center text-muted-foreground">Nenhuma migração ainda.</Card>
         ) : migrations.map((m: any) => {
           const done = (m.added_count ?? 0) + (m.failed_count ?? 0) + (m.skipped_count ?? 0);
           const pct = m.total ? Math.round((done / m.total) * 100) : 0;
+          const isRunning = m.status === "running";
+          const isFirst = isRunning && done === 0;
           return (
-            <Card key={m.id} className="p-4 space-y-3">
+            <Card key={m.id} className="p-4 space-y-3 card-premium card-premium-hover relative overflow-hidden">
+              {isRunning && (
+                <span className="pointer-events-none absolute -top-px left-0 right-0 h-px bg-gradient-to-r from-transparent via-primary to-transparent animate-shimmer" />
+              )}
               <div className="flex items-start justify-between gap-3 flex-wrap">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium truncate">{m.source_group_subject || m.source_group_jid}</span>
-                    <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <ArrowRight className={`h-4 w-4 text-muted-foreground shrink-0 ${isRunning ? "animate-pulse" : ""}`} />
                     <span className="font-medium truncate">{m.target_group_subject || m.target_group_jid || "—"}</span>
                     <Badge variant={
                       m.status === "completed" ? "default" :
                       m.status === "running" ? "secondary" :
                       m.status === "failed" || m.status === "canceled" ? "destructive" : "outline"
-                    }>{m.status}</Badge>
+                    } className={isRunning ? "animate-pulse" : ""}>
+                      {m.status === "completed" && <CheckCircle2 className="mr-1 h-3 w-3 inline" />}
+                      {(m.status === "failed" || m.status === "canceled") && <AlertTriangle className="mr-1 h-3 w-3 inline" />}
+                      {m.status}
+                    </Badge>
                     <Badge variant="outline">{m.mode === "new_group" ? "novo grupo" : "grupo existente"}</Badge>
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
                     Batch {m.batch_size} · delay {m.min_delay_seconds}–{m.max_delay_seconds}s ·
                     {" "}✅ {m.added_count} · ⚠️ {m.skipped_count} · ❌ {m.failed_count} de {m.total}
                   </p>
-                  {m.last_error && <p className="text-xs text-destructive mt-1">Erro: {m.last_error}</p>}
+                  {(isRunning || m.status === "paused") && (
+                    <Countdown
+                      target={m.next_attempt_at}
+                      label={isFirst ? "Primeiro catch em" : "Próximo catch em"}
+                      paused={m.status === "paused"}
+                    />
+                  )}
+                  {m.last_error && <p className="text-xs text-destructive mt-1 animate-fade-in">Erro: {m.last_error}</p>}
                 </div>
                 <div className="flex gap-1">
-                  {m.status === "running" && (
-                    <Button size="sm" variant="outline" onClick={() => runNow.mutate({ data: { id: m.id } })} disabled={runNow.isPending}>
+                  {isRunning && (
+                    <Button size="sm" variant="outline" className="hover-lift" onClick={() => runNow.mutate({ data: { id: m.id } })} disabled={runNow.isPending}>
                       {runNow.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Zap className="mr-1 h-4 w-4" /> Batch agora</>}
                     </Button>
                   )}
-                  {m.status === "running" && (
+                  {isRunning && (
                     <Button size="sm" variant="ghost" onClick={() => control.mutate({ data: { id: m.id, action: "pause" } })}>
                       <Pause className="h-4 w-4" />
                     </Button>
@@ -134,14 +156,25 @@ function Page() {
                       <Play className="h-4 w-4" />
                     </Button>
                   )}
-                  {(m.status === "running" || m.status === "paused") && (
+                  {(isRunning || m.status === "paused") && (
                     <Button size="sm" variant="ghost" onClick={() => control.mutate({ data: { id: m.id, action: "cancel" } })}>
                       <X className="h-4 w-4" />
                     </Button>
                   )}
                 </div>
               </div>
-              <Progress value={pct} />
+              <div className="relative">
+                <Progress value={pct} className="transition-all duration-700" />
+                {isRunning && (
+                  <span className="pointer-events-none absolute inset-0 rounded-full overflow-hidden">
+                    <span className="absolute inset-y-0 -left-1/3 w-1/3 bg-gradient-to-r from-transparent via-white/40 to-transparent animate-shimmer" />
+                  </span>
+                )}
+                <div className="mt-1 flex justify-between text-[10px] text-muted-foreground tabular-nums">
+                  <span>{done}/{m.total}</span>
+                  <span>{pct}%</span>
+                </div>
+              </div>
             </Card>
           );
         })}
@@ -149,6 +182,38 @@ function Page() {
     </div>
   );
 }
+
+function Countdown({ target, label, paused }: { target: string | null | undefined; label: string; paused?: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  if (!target) {
+    return (
+      <div className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Timer className="h-3 w-3" /> {paused ? "Pausado" : "Aguardando agendamento…"}
+      </div>
+    );
+  }
+  const diff = Math.max(0, Math.floor((new Date(target).getTime() - now) / 1000));
+  const mm = String(Math.floor(diff / 60)).padStart(2, "0");
+  const ss = String(diff % 60).padStart(2, "0");
+  const running = !paused && diff > 0;
+  const ready = !paused && diff === 0;
+  return (
+    <div className={`mt-2 inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs tabular-nums transition-colors ${
+      paused ? "bg-muted/40 text-muted-foreground" :
+      ready ? "bg-primary/10 border-primary/30 text-primary" :
+      "bg-accent/40 border-accent text-accent-foreground"
+    }`}>
+      <Timer className={`h-3 w-3 ${running ? "animate-spin" : ""}`} style={running ? { animationDuration: "3s" } : undefined} />
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-semibold">{paused ? "—" : ready ? "executando…" : `${mm}:${ss}`}</span>
+    </div>
+  );
+}
+
 
 function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDone: () => void }) {
   const [connectionId, setConnectionId] = useState(connections[0]?.id ?? "");
