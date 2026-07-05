@@ -164,7 +164,21 @@ export const startGroupMigration = createServerFn({ method: "POST" })
     }).eq("id", data.connectionId).eq("user_id", context.userId);
 
     const { evolution } = await import("@/lib/evolution.server");
-    const parts = await evolution.groupParticipants(instance, data.sourceGroupJid);
+    // 1 única leitura do grupo de origem: participantes + subject saem da
+    // mesma chamada findGroupInfo. Antes fazíamos DUAS leituras seguidas do
+    // mesmo grupo (groupParticipants → findGroupInfo internamente + outra
+    // findGroupInfo para o subject). Duas leituras do mesmo grupo em menos
+    // de 1s é padrão de bot; humano abre o grupo 1 vez.
+    const sourceInfo = await evolution.findGroupInfo(instance, data.sourceGroupJid);
+    const parts: any[] = Array.isArray(sourceInfo?.participants)
+      ? sourceInfo.participants
+      : Array.isArray(sourceInfo?.data?.participants)
+        ? sourceInfo.data.participants
+        : Array.isArray(sourceInfo?.groupMetadata?.participants)
+          ? sourceInfo.groupMetadata.participants
+          : [];
+    const sourceSubject: string | null = sourceInfo?.subject ?? sourceInfo?.data?.subject ?? null;
+
     const exclude = new Set(data.excludePhones.map((p) => digits(p)));
     if (data.skipSelf && ownerPhone) exclude.add(ownerPhone);
 
@@ -197,13 +211,6 @@ export const startGroupMigration = createServerFn({ method: "POST" })
       allPhones = allPhones.slice(0, maxTargets);
     }
     if (allPhones.length === 0) throw new Error("Nenhum participante válido após filtros (DDD/estado/exclusões)");
-
-    // Subject de origem — melhor UX no histórico
-    let sourceSubject: string | null = null;
-    try {
-      const info = await evolution.findGroupInfo(instance, data.sourceGroupJid);
-      sourceSubject = info?.subject ?? info?.data?.subject ?? null;
-    } catch { /* noop */ }
 
     let targetGroupJid = data.targetGroupJid ?? null;
     let targetSubject = data.targetSubject ?? null;
