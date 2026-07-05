@@ -1029,20 +1029,40 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
   }
 
 
-  const nextAt = new Date(Date.now() + automationDelaySeconds(mig.min_delay_seconds, mig.max_delay_seconds) * 1000).toISOString();
+  const human = computeHumanDelayMs(mig, added);
+  const nextAt = new Date(Date.now() + human.delayMs).toISOString();
   const totalDone = (mig.added_count ?? 0) + added + effectiveFailedCount + failed + (mig.skipped_count ?? 0) + skipped;
   const done = totalDone >= (mig.total ?? 0);
 
-  // Se o batch conseguiu adicionar/skippar alguém, resetamos o contador de
-  // falhas transientes consecutivas (item 6).
   const hadProgress = added > 0 || skipped > 0;
   const prevMeta = (mig.metadata as Record<string, unknown>) ?? {};
   const nextMeta: Record<string, unknown> = {
     ...prevMeta,
+    ...human.metaPatch,
     last_batch_at: new Date().toISOString(),
+    last_human_schedule_reason: human.reason,
+    last_human_delay_ms: human.delayMs,
   };
   if (hadProgress) nextMeta.consecutive_transient_failures = 0;
   if (hadProgress) nextMeta.consecutive_conflict_failures = 0;
+
+  if (added > 0) {
+    await auditLog(supabase, {
+      userId: mig.user_id,
+      action: "migration_human_scheduled",
+      entity: "group_migration",
+      entityId: mig.id,
+      metadata: {
+        connection_id: mig.connection_id,
+        reason: human.reason,
+        delay_ms: human.delayMs,
+        delay_minutes: Math.round(human.delayMs / 60000),
+        next_attempt_at: nextAt,
+        total_added: (mig.added_count ?? 0) + added,
+        daily_count: (human.metaPatch.daily_counter as any)?.count ?? null,
+      },
+    });
+  }
 
   await updateMigrationSafe(supabase, mig.id, {
     status: done ? "completed" : "running",
