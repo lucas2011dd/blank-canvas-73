@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useState } from "react";
-import { UsersRound, Play, Pause, X, Zap, Loader2, ArrowRight } from "lucide-react";
+import { UsersRound, Play, Pause, X, Zap, Loader2, ArrowRight, Timer, CheckCircle2, AlertTriangle, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
