@@ -580,6 +580,22 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
       const nextAttemptAt = after?.next_attempt_at ?? null;
       const waitMs = waitMsUntil(nextAttemptAt);
       const outcome = catchError ? "error" : ((catchResult as any)?.skipped ? "skipped" : "ok");
+
+      // Auto-clear de last_error "fantasma": se este catch terminou sem
+      // exceção e o last_error persistido é o backoff transiente/409 de
+      // uma falha anterior já superada, zera. Sem isso o UI segue exibindo
+      // "Conexão instável..." mesmo com a migração rodando saudável.
+      if (!catchError && after?.last_error && (
+        after.last_error.startsWith("Conexão instável") ||
+        after.last_error.startsWith("Evolution retornou HTTP 409")
+      )) {
+        try {
+          await supabase.from("group_migrations")
+            .update({ last_error: null })
+            .eq("id", migrationId);
+        } catch { /* best-effort */ }
+      }
+
       console.info(
         `[migration-catch] END migration=${migrationId} connection=${mig.connection_id} outcome=${outcome} finish=${finishedAt.toISOString()} duration_ms=${durationMs} next=${nextAttemptAt ?? "null"} wait_ms=${waitMs ?? "null"}`,
       );
@@ -608,6 +624,7 @@ export async function processGroupMigrationBatch(supabase: any, migrationId: str
         },
       });
     } catch { /* logging must never block lock release */ }
+
     await releaseConnectionLock(supabase, mig.connection_id, lockUntil);
   }
 }
