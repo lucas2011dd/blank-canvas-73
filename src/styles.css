@@ -257,6 +257,15 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes shimmer-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+@utility animate-shimmer {
+  animation: shimmer-slide 1.8s var(--ease-in-out-quart) infinite;
+}
+
+
 /* Respeita usuários que pedem menos movimento */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
