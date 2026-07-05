@@ -358,9 +358,10 @@ function NewMigrationDialog({ connections, onDone }: { connections: any[]; onDon
         <BrGeoFilter states={filterStates} setStates={setFilterStates} ddds={filterDdds} setDdds={setFilterDdds} />
 
         <p className="text-xs text-muted-foreground">
-          O processamento automático deve rodar pelo cron externo; o painel não dispara batches em loop para não sobrecarregar a Evolution.
-          Adiciona com ritmo seguro: 1 contato por chamada real, delay {minDelay}–{maxDelay}s entre cada adição.
-          <b> Recomendado: mínimo 180s, máximo 300s</b> para VPS 2 vCPU/4GB e evitar picos na Evolution.
+          Modo humano avançado ativo: cadência com jitter log-normal, warm-up nos 5 primeiros adds,
+          coffee breaks aleatórios a cada 6–10 adds (20–45min), quiet hours 22h–08h (SP) e limite
+          diário por conexão. Base configurada: 1 add por catch, delay {minDelay}–{maxDelay}s
+          (o sistema aumenta automaticamente conforme o padrão humano).
         </p>
       </div>
       <DialogFooter>
