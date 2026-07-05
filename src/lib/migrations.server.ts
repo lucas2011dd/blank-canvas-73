@@ -997,7 +997,7 @@ async function _processGroupMigrationBatchInner(supabase: any, mig: any) {
       await updateMigrationSafe(supabase, mig.id, {
         failed_count: effectiveFailedCount,
         next_attempt_at: new Date(Date.now() + retryDelayMs).toISOString(),
-        last_error: `Conexão instável durante adição — retry automático em ${Math.round(retryDelayMs / 1000)}s (falha ${nextConsecutive}, backoff exponencial)`,
+        last_error: `Conexão instável durante adição — retry automático em ${Math.round(retryDelayMs / 1000)}s (falha ${nextConsecutive}, backoff exponencial). Causa: ${compactError(e)}`,
         metadata: {
           ...((mig.metadata as Record<string, unknown>) ?? {}),
           last_batch_at: new Date().toISOString(),
